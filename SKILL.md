@@ -26,6 +26,17 @@ answer from context, or anything needing under ~2 minutes. Dispatch costs a proc
 a full context prime for the worker, and a review pass from you. Delegate when the task has
 independent parts, needs bulk file work, or would otherwise flood your own context.
 
+Fan out only when the work actually decomposes. Parallel agents win on breadth-first work —
+independent modules, wide searches, many files with the same treatment — and lose on work with
+a shared context or a dependency chain, where measured results show multi-agent topologies
+performing substantially worse than a single agent on sequential planning tasks. One worker on
+a well-scoped task beats three workers guessing at each other's assumptions, and it costs less
+to review. Gate on decomposability, not on ambition.
+
+Worker count is not the scarce resource; your review capacity is. Each finished agent needs a
+diff read and a test run from you, so keep about three review-bearing agents in flight and
+raise it only for shallow, uniform work.
+
 ## Workflow
 
 ### 1. Create the run directory
@@ -74,6 +85,10 @@ for the tests you run yourself during review — you are a workload on the same 
 Dispatch the longest-running agents first — the `xhigh` ones, and anything reading a lot of
 code — so the quick agents finish inside their runtime and you review during the wait instead
 of after it.
+
+Give every write-capable agent in a fan-out its own git worktree with `--worktree`, so parallel
+agents cannot overwrite each other's files and each change arrives as a reviewable branch. See
+[references/worktrees.md](references/worktrees.md) for dispatch, merge order, and cleanup.
 
 ### 3. Write the task spec
 
@@ -160,14 +175,22 @@ For anything you must parse rather than read, pass `--schema`: Codex is then for
 with JSON matching that schema, which removes prose-parsing failures. See
 [references/schemas.md](references/schemas.md) for ready-made schemas.
 
-Non-negotiable invocation rules, each learned from a real failure:
+Non-negotiable invocation rules, each learned from a real failure or read out of the CLI
+source:
 
 - Never let Codex inherit your stdin. The script feeds the prompt file on stdin; a raw
   `codex exec "prompt"` with an inherited terminal stdin hangs until it is killed.
-- Always wrap in `timeout`. `codex exec` has no internal limit.
-- `codex exec resume` accepts neither `-C` nor `-s`: the workspace is the process cwd and the
-  sandbox comes from `-c sandbox_mode=…`. The script already handles this.
+- Always wrap in `timeout`, sending `SIGINT` first — Codex turns it into a graceful turn
+  interrupt. `codex exec` has no internal limit.
+- Every option is a root option placed *before* the `resume` subcommand:
+  `codex exec -C dir -s mode … resume <thread> -`. A resumed run inherits nothing from the
+  original: sandbox, cwd, model, and workspace roots all come from the new invocation, so
+  repeat the full policy every time.
 - Outside a git repository, `--skip-git-repo-check` is required (the script always passes it).
+- The CLI forwards `--output-schema` unvalidated and the rejection only arrives from the API,
+  after you have paid for the dispatch. The wrapper pre-checks the documented Structured
+  Outputs subset: object root, every property required, `additionalProperties: false`
+  everywhere, no `allOf`/`oneOf`/`if`/`not`, at most 10 levels deep.
 
 ### 7. Supervise — handle agents one at a time, as they land
 
@@ -192,7 +215,15 @@ deduplicating findings across parallel auditors, or integrating modules that mus
 change. Everything else is per-agent work masquerading as a batch.
 
 Read `events.jsonl` when an agent misbehaves; it records each `command_execution` with its exit
-code, so you can see exactly what the worker ran and where it went wrong.
+code, so you can see exactly what the worker ran and where it went wrong. A failed command
+inside a run is normal exploration — only `turn.failed`, a top-level `error`, or a non-zero
+process exit means the agent failed, and `meta.json` separates the two.
+
+Kill early instead of waiting out a worker that is not progressing. `--stall SEC` interrupts an
+agent that has emitted no event for that long, which catches a hung command or a retry loop
+without waiting for the full timeout. Repeated identical failing commands in `events.jsonl` are
+the other early signal: the worker is stuck on something your spec cannot fix, so interrupt it
+and re-scope.
 
 #### Feeding information to a running agent
 
@@ -256,12 +287,22 @@ evidence:
 2. Check the diff against the acceptance criteria in `PLAN.md`, and check that nothing outside
    the declared scope was touched.
 3. Run the tests, the build, and the linter yourself. Do not trust a worker's "verified".
-4. Optionally take a second opinion inside a git repository:
-   `codex exec review --uncommitted` — useful, still only advisory.
+4. For a risky change, add an independent critic with a fresh context — inside a git repository
+   `codex exec review --uncommitted`, otherwise a `read-only` agent that is told to falsify the
+   change against the acceptance criteria. A critic is evidence, not an oracle: published
+   results show critics catching real bugs while missing deeper ones, so its findings are
+   candidates you confirm, never a verdict you forward.
 5. Write the verdict per agent into `<run>/REVIEW.md`: accept, fix round, or redo.
+
+Order matters: deterministic checks first, critics second. A test run settles in seconds what a
+critic argues about for a page.
 
 Reject silently-passing work: tests weakened to pass, exceptions swallowed, features stubbed,
 files created outside scope, dependencies added that nobody asked for.
+
+Keep the raw material in the run directory and out of your own context. Read the digest and the
+diff; open `events.jsonl` and full logs only when something looks wrong. A supervisor that
+pastes every worker's output into its own context loses the one thing the fan-out was protecting.
 
 ### 9. Fix rounds
 
@@ -277,6 +318,22 @@ Feed review findings back into the same thread so the worker keeps its context:
 State findings as facts with file and line, not as questions. Allow at most two fix rounds per
 agent; after that, either take over yourself or re-dispatch a fresh agent with a sharper spec,
 because a thread that has failed twice usually carries the wrong assumption forward.
+
+#### Resume or start fresh
+
+Resuming is not cheap: the whole thread is replayed as input on every continuation, so a long
+research thread can cost hundreds of thousands of input tokens to answer one more question.
+Agent count itself is not limited, so the choice is purely about the memory in that thread.
+
+Resume when the accumulated context is expensive to rebuild and still correct — a worker deep
+in an unfamiliar codebase, a partially finished change, findings you want extended. Start a
+fresh agent when the context is small, easy to reconstruct from the workspace, or wrong: a
+mistaken assumption in a thread propagates into every later turn, and a clean spec that names
+the two files involved beats a resumed thread that has been wrong twice.
+
+Retry classification matters more than retry count. A transient failure — API error, network
+drop, a killed process — resumes as-is. A semantic failure never gets the same prompt again:
+send the verifier's evidence back, or re-scope and dispatch fresh.
 
 ### 10. Ship
 
@@ -302,4 +359,6 @@ what you rejected, and what you changed yourself.
 
 - [references/prompt-template.md](references/prompt-template.md) — the task spec structure
 - [references/schemas.md](references/schemas.md) — output schemas for impl, findings, research
+- [references/worktrees.md](references/worktrees.md) — isolating parallel writers, merging, cleanup
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and fixes
+- [references/evidence.md](references/evidence.md) — the measurements behind these defaults

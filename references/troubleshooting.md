@@ -15,9 +15,31 @@ re-dispatch.
 
 ## `error: unexpected argument '-C' found`
 
-`codex exec resume` takes neither `-C` nor `-s`. The workspace is the process working
-directory, and the sandbox comes from `-c sandbox_mode=<mode>`. `codex_agent.sh` switches
-automatically when `--resume` is given.
+The option was placed after the `resume` subcommand. Every option is a root option and belongs
+before it: `codex exec -C dir -s mode --json -o out resume <thread> -`.
+
+The same ordering matters semantically, not just syntactically. A resumed run inherits nothing
+from the original — sandbox, working directory, model, and workspace roots all come from the
+new invocation — so an omitted flag silently falls back to the config default instead of the
+worker's original policy. `codex_agent.sh` repeats the full policy on every resume.
+
+## A resumed agent cost far more than expected
+
+Resume replays the entire thread as input. A single follow-up question on a long research
+thread was metered at over 300K input tokens. Continue a thread for the context it holds, not
+out of habit: when the context is small or reconstructible from the workspace, a fresh agent
+with a precise spec is cheaper and carries no stale assumptions.
+
+## The agent went quiet
+
+`--stall SEC` interrupts a worker that has emitted no event for that long, which catches a hung
+command or a retry loop long before the wall-clock timeout. `meta.json` reports `stalled: true`
+so it is distinguishable from a genuine overrun. Check the last `command_execution` in
+`events.jsonl` to see what it hung on.
+
+There is no supported way to send input into a running `codex exec` — stdin is consumed at
+start, and SIGINT is the only signal it interprets, as a graceful turn interrupt. Corrections
+travel through `NOTES.md` (see the live-notes mechanism) or a fix round.
 
 ## `not inside a trusted directory` / git repo errors
 
@@ -43,8 +65,16 @@ test run are evidence. When they disagree, the summary is wrong.
 ## Two agents fought over one file
 
 Overlapping write scopes, and nothing detects it at dispatch time. Recover by keeping one
-version, reverting the other, and re-dispatching with disjoint scopes. Prevent it by assigning
-file ownership in `PLAN.md` before dispatching anything.
+version, reverting the other, and re-dispatching with disjoint scopes. Prevent it with
+`--worktree` per write-capable agent, plus file ownership assigned in `PLAN.md` before anything
+is dispatched. See [worktrees.md](worktrees.md).
+
+## A worktree cannot be created
+
+`--worktree` needs `--cwd` to be a git repository, and the branch name `codex/<name>` must be
+free unless the worktree is being reused deliberately. A leftover worktree from an aborted run
+blocks reuse of the same path: `codex_worktrees.sh <run> --list` shows what is registered, and
+`--remove-merged <base>` removes only what has already landed.
 
 ## The worker committed anyway
 

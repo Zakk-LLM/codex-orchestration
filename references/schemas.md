@@ -7,9 +7,17 @@ result; use plain prose only when a human reads it directly.
 Write the schema into `<run>/schema/<name>.json` before dispatching. The result lands in
 `<run>/agents/<label>/result.json`.
 
-Constraints that matter: the top level must be an object, and every object needs
-`"additionalProperties": false` plus a `required` list, otherwise workers pad the answer with
-invented fields.
+The CLI forwards the schema to the API without checking it, so an invalid schema is rejected
+only after the dispatch is paid for. `codex_agent.sh` pre-checks the documented subset and
+refuses to launch. The constraints:
+
+- the root must be an object, not `anyOf`
+- every object needs `"additionalProperties": false` and lists every property in `required`
+  (make a field optional by allowing `null` in its type, not by omitting it)
+- supported: string, number, integer, boolean, object, array, enum, nested `anyOf`, `$defs`
+- rejected: `allOf`, `oneOf`, `not`, `if`/`then`/`else`, `dependentRequired`,
+  `dependentSchemas`, `patternProperties`
+- limits: 10 nesting levels, 5,000 properties, 120,000 characters of schema, 1,000 enum values
 
 ## Implementation
 
