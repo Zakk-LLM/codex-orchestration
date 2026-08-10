@@ -56,6 +56,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache \
   --schema "$RUN/schema/impl.json"
 
 scripts/codex_note.sh "$RUN" auth-cache "Token TTL is 900s."
+scripts/codex_verify.sh "$RUN" auth-cache --check "pytest -q"
 scripts/codex_wait.sh "$RUN" --handled docs
 scripts/codex_status.sh "$RUN"
 scripts/codex_worktrees.sh "$RUN" --diff main
@@ -98,6 +99,26 @@ Finish times differ by an order of magnitude: a `low`-effort edit returns in und
 again. Waiting for the whole batch is justified only when the next decision needs all results
 together, such as deduplicating findings across auditors or landing modules as one change.
 
+## Review gate
+
+An agent's report is a claim; a command that was run is evidence. Nothing is accepted on a
+claim — not a confident summary, not a reasonable-looking diff, not another agent's approval.
+`codex_verify.sh` mechanizes the checkable part and returns `not-verified` whenever no
+acceptance check ran or a file outside the declared `Write:` scope changed:
+
+```bash
+scripts/codex_verify.sh "$RUN" auth-cache \
+  --check "pytest tests/test_auth.py -q" --check "ruff check src/"
+```
+
+It records the changed files, the out-of-scope files, and every command with its exit code and
+output tail in `verify.json`. Build artifacts are separated out rather than reported as scope
+violations. The remaining steps need judgment and stay manual: read the diff line by line, run
+a negative control so a passing test is known to fail without the change, and look for silent
+passing such as weakened assertions or swallowed exceptions. Research output is checked the
+same way, by fetching a sample of the sources and confirming the quoted numbers appear there.
+The protocol is in [references/review-gate.md](references/review-gate.md).
+
 ## Feeding information to a running agent
 
 `codex exec` accepts no input after it starts: stdin is consumed to EOF at launch, and SIGINT is
@@ -130,6 +151,7 @@ unsuitable: event logs are large and vanish on reboot.
     events.jsonl               Codex events, every command and exit code
     stderr.log                 error output
     result.json | last.txt     final answer
+    verify.json                review gate: scope check and every acceptance command run
     thread.txt                 thread id, for fix rounds and continuations
     meta.json                  exit code, duration, usage, timeout and stall flags, files touched
 <run>/REVIEW.md                verdict per agent
@@ -226,6 +248,7 @@ measurements behind these defaults are in [references/evidence.md](references/ev
 - [references/prompt-template.md](references/prompt-template.md) — task spec template
 - [references/schemas.md](references/schemas.md) — implementation, findings, research schemas
 - [references/worktrees.md](references/worktrees.md) — isolating parallel writers, merging, cleanup
+- [references/review-gate.md](references/review-gate.md) — the anti-optimism review protocol
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and recovery
 - [references/evidence.md](references/evidence.md) — measurements and sources behind the defaults
 

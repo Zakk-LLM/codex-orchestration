@@ -50,6 +50,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache \
   --schema "$RUN/schema/impl.json"
 
 scripts/codex_note.sh "$RUN" auth-cache "Token TTL 是 900 秒。"
+scripts/codex_verify.sh "$RUN" auth-cache --check "pytest -q"
 scripts/codex_wait.sh "$RUN" --handled docs
 scripts/codex_status.sh "$RUN"
 scripts/codex_worktrees.sh "$RUN" --diff main
@@ -78,6 +79,17 @@ scripts/codex_worktrees.sh "$RUN" --remove-merged main
 
 完成時間差距很大：`low` 強度的小修改不到一分鐘，`xhigh` 稽核可能跑二十分鐘。`codex_wait.sh` 阻塞到有代理完成即印出 `<label> <state>`；審查該代理、必要時派出修正回合，再把它加入 `--handled` 繼續等下一個。只有在下一步決策確實需要全部結果時才等齊，例如跨代理發現去重，或必須一次落地的模組整合。
 
+## 審查閘門
+
+工作代理的報告只是主張，實際執行過的命令才是證據，兩者不可互換。信心十足的摘要、看起來合理的 diff、另一個代理的通過結論，都不構成接受的理由。`codex_verify.sh` 將可機械化的部分固定下來：沒有執行任何驗收命令，或有檔案落在規格宣告的 `Write:` 範圍之外時，一律回報 `not-verified`。
+
+```bash
+scripts/codex_verify.sh "$RUN" auth-cache \
+  --check "pytest tests/test_auth.py -q" --check "ruff check src/"
+```
+
+`verify.json` 記錄改動檔案、越界檔案，以及每條命令的離開碼與輸出尾段；建置產物另行列出，不算越界。其餘需要判斷的步驟仍由協調者執行：逐行讀 diff、跑反向對照確認測試在沒有該修改時確實失敗、檢查是否有削弱斷言或吞掉例外這類靜默通過。研究結果同樣處理，抽查來源並確認引述數字確實出現在該頁。完整流程見 [references/review-gate.md](references/review-gate.md)。
+
 ## 即時補充資訊
 
 `codex exec` 啟動後不接受任何輸入，stdin 在開始時即讀到 EOF，SIGINT 是唯一被解讀的訊號。因此新資訊透過工作代理會重讀的檔案送達：任務規格的 live-notes 區塊要求每個步驟前重讀 `NOTES.md`，以最新一條為準。
@@ -102,6 +114,7 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
     events.jsonl               Codex 事件記錄，含每條命令與離開碼
     stderr.log                 錯誤輸出
     result.json 或 last.txt    最後回覆
+    verify.json                審查閘門：範圍檢查與每條驗收命令的結果
     thread.txt                 thread id，供修正回合與續作
     meta.json                  離開碼、耗時、token 用量、逾時與停滯旗標、改動檔案
 <run>/REVIEW.md                每個代理的審查結論
@@ -170,6 +183,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache-cont \
 - [references/prompt-template.md](references/prompt-template.md)：任務規格範本
 - [references/schemas.md](references/schemas.md)：實作、稽核、研究三類輸出結構
 - [references/worktrees.md](references/worktrees.md)：並行寫入隔離、合併與清理
+- [references/review-gate.md](references/review-gate.md)：拒絕樂觀判斷的審查流程
 - [references/troubleshooting.md](references/troubleshooting.md)：失敗情形與處理方式
 - [references/evidence.md](references/evidence.md)：預設值依據的量測與來源
 

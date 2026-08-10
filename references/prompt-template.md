@@ -35,6 +35,11 @@ finished. Do this even when it looks redundant.
 - <command that must pass, e.g. `pytest tests/test_cache.py -q`>
 - <observable behavior>
 
+## Verification you must perform
+Run every acceptance command yourself and report each one with its exact invocation and exit
+code. Do not report success from reading the code. List anything you could not verify and why.
+State `blocked` rather than inventing a way around a requirement that contradicts the code.
+
 ## Prohibitions
 - Do not run `git commit`, `git push`, `git rebase`, `git checkout`, or any git command that
   changes history or the index.
@@ -60,6 +65,8 @@ finished. Do this even when it looks redundant.
   rules, or earlier discussion. The one exception is a file it can open itself: a skill under
   `${CODEX_HOME:-~/.codex}/skills`, or an `AGENTS.md` inside its `--cwd`. Give the absolute
   path and say to read it; drop the `## Skills` block when no installed skill applies.
+- **Demand executed evidence, not a verdict.** A worker that says "verified" with no command
+  and no exit code has reported nothing, and the review gate treats it that way.
 - **Say what to do when blocked.** Without the last prohibition, a blocked worker invents a
   plausible substitute and reports success.
 - **Ask for the diff to stay minimal** when touching existing code: no reformatting, no

@@ -25,7 +25,7 @@ refuses to launch. The constraints:
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "summary", "files_changed", "commands_run", "unresolved"],
+  "required": ["status", "summary", "files_changed", "commands_run", "not_verified", "unresolved"],
   "properties": {
     "status": {"type": "string", "enum": ["done", "partial", "blocked"]},
     "summary": {"type": "string"},
@@ -53,10 +53,16 @@ refuses to launch. The constraints:
         }
       }
     },
+    "not_verified": {"type": "array", "items": {"type": "string"}},
     "unresolved": {"type": "array", "items": {"type": "string"}}
   }
 }
 ```
+
+`commands_run` is what makes the report checkable: an empty list next to `status: "done"` means
+the worker verified nothing, whatever its summary says. `not_verified` is required for the same
+reason — a worker that claims complete coverage is either wrong or was not asked a hard enough
+question. Re-run the listed commands yourself; their presence is a claim until you do.
 
 `status: "blocked"` with a populated `unresolved` list is a successful outcome: the worker hit
 a real contradiction instead of inventing a way around it.
@@ -121,4 +127,6 @@ complaints dressed up as bugs. Findings from parallel agents deduplicate on `fil
 ```
 
 Treat `unverified` as unusable until you check it yourself, and spot-check the sources behind
-anything marked `verified`.
+anything marked `verified`: fetch at least two of them and confirm the quoted number, publisher,
+and date actually appear there. Fabricated and drifted citations are the normal failure mode of
+research agents, and a confident answer with a plausible URL is exactly what they look like.

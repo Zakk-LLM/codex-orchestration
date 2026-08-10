@@ -53,7 +53,8 @@ Layout:
 ```
 <run>/PLAN.md                 your decomposition and acceptance criteria
 <run>/schema/<name>.json      output schemas
-<run>/agents/<label>/prompt.md events.jsonl stderr.log result.json|last.txt thread.txt meta.json
+<run>/agents/<label>/prompt.md NOTES.md events.jsonl stderr.log result.json|last.txt
+                     thread.txt meta.json verify.json
 <run>/REVIEW.md               your findings per agent, with the verdict
 ```
 
@@ -279,23 +280,37 @@ separate agents, because a task that overruns twice is one task too many.
 
 ### 8. Review — the part you never delegate
 
-Run this per agent, as soon as that agent returns. A worker's own summary is a claim, not
-evidence:
+Run this per agent, as soon as that agent returns. **An agent's report is a claim; a command you
+ran is evidence. Nothing is accepted on a claim** — not because the summary says done, not
+because the diff looks reasonable, not because another agent reviewed it, and not because the
+task was simple. Optimism is the normal failure mode here, and it costs nothing at the moment
+it happens.
 
 1. Read the real diff (`git diff`, or read the files if the workspace is not a repository).
    Never accept `files_changed` at face value.
-2. Check the diff against the acceptance criteria in `PLAN.md`, and check that nothing outside
-   the declared scope was touched.
-3. Run the tests, the build, and the linter yourself. Do not trust a worker's "verified".
-4. For a risky change, add an independent critic with a fresh context — inside a git repository
-   `codex exec review --uncommitted`, otherwise a `read-only` agent that is told to falsify the
-   change against the acceptance criteria. A critic is evidence, not an oracle: published
-   results show critics catching real bugs while missing deeper ones, so its findings are
-   candidates you confirm, never a verdict you forward.
-5. Write the verdict per agent into `<run>/REVIEW.md`: accept, fix round, or redo.
+2. Check every changed file against the declared `Write:` scope.
+3. Run each acceptance criterion yourself and keep the exit code. A criterion with no command
+   behind it was never verified.
+4. Run a negative control: revert or break the change and confirm the check fails, then restore.
+   A test that passes both ways proves nothing, and that is how weak work usually survives.
+5. For a risky change, add an independent critic with a fresh context — inside a git repository
+   `codex exec review --uncommitted`, otherwise a `read-only` agent told to falsify the change
+   against the acceptance criteria. Its output is a list of candidates you confirm by running
+   something, never a verdict you forward.
+6. Write the verdict and its evidence into `<run>/REVIEW.md`, including a line stating what was
+   *not* verified.
+
+Steps 2 and 3 are mechanized, and the gate returns `not-verified` when no check ran:
+
+```sh
+"$CODEX_SKILL/scripts/codex_verify.sh" "$RUN" auth-cache \
+  --check "pytest tests/test_auth.py -q" --check "ruff check src/"
+```
 
 Order matters: deterministic checks first, critics second. A test run settles in seconds what a
-critic argues about for a page.
+critic argues about for a page. Research output gets the same treatment — sources are part of
+the claim, so fetch a sample yourself and confirm the quoted numbers actually appear there.
+[references/review-gate.md](references/review-gate.md) has the full protocol.
 
 Reject silently-passing work: tests weakened to pass, exceptions swallowed, features stubbed,
 files created outside scope, dependencies added that nobody asked for.
@@ -360,5 +375,6 @@ what you rejected, and what you changed yourself.
 - [references/prompt-template.md](references/prompt-template.md) — the task spec structure
 - [references/schemas.md](references/schemas.md) — output schemas for impl, findings, research
 - [references/worktrees.md](references/worktrees.md) — isolating parallel writers, merging, cleanup
+- [references/review-gate.md](references/review-gate.md) — the anti-optimism review protocol
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and fixes
 - [references/evidence.md](references/evidence.md) — the measurements behind these defaults
