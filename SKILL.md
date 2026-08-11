@@ -14,7 +14,8 @@ Four reasons, in the order they matter:
 
 **Context.** A worker explores in its own context window — file reads, greps, failed commands,
 dead ends — and returns a bounded result. In this skill's own research run the workers consumed
-12.6M input tokens between them while the orchestrator read three result files. That work would
+12.6M input tokens between them while the orchestrator read three result files (observed during
+development; that run directory was not retained). That work would
 otherwise have landed in your context and pushed out the plan you are holding.
 
 **Cost per unit of difficulty.** Each task is dispatched at the cheapest tier that can do it,
@@ -42,9 +43,11 @@ codex --version || echo "codex CLI not installed — stop and tell the user"
 
 Agents started by another orchestrator session, another terminal, or by hand are still using
 this machine and this API quota. The registry lists them, `codex_capacity.sh` subtracts them,
-and `codex_agent.sh` holds a lock for the whole run, so the machine-wide cap
-(`CODEX_MAX_AGENTS`, default 5) holds even between sessions that know nothing about each other.
-An idle Codex TUI is not an agent and is never counted.
+and `codex_agent.sh` holds a slot lock for the whole run, so the cap (`CODEX_MAX_AGENTS`,
+default 5) holds between sessions that use this wrapper. A `codex exec` started by hand holds
+no lock: it is counted and displayed, but it can still push the machine past the cap, so check
+the list rather than assuming the lock covers everything. An idle Codex TUI, a zombie, and the
+wrapper's own child process are never counted.
 
 The scripts below assume `codex >= 0.40` with the `exec` subcommand. Set
 `CODEX_SKILL=<this skill's directory>` so the examples are copy-pasteable.

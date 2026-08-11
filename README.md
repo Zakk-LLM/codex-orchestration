@@ -134,8 +134,9 @@ scripts/codex_agents.sh --slots     # free slots against CODEX_MAX_AGENTS (defau
 ```
 
 Each agent registers itself while it runs and holds one of the slot locks, so the cap holds
-across sessions that know nothing about each other; `--admission refuse` fails instead of
-queuing. An idle Codex TUI, a zombie, and an unrelated program named `codex` are never counted:
+across sessions that use this wrapper; `--admission refuse` fails instead of queuing. A
+`codex exec` started by hand holds no lock — it is counted and listed, but it can still push
+the machine past the cap. An idle Codex TUI, a zombie, and an unrelated program named `codex` are never counted:
 liveness comes from the registry entry's pid and process start time, and the process scan
 requires a real `exec` invocation.
 

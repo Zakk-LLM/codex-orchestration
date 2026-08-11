@@ -16,7 +16,7 @@ Usage: codex_merge.sh --run-dir DIR --repo DIR --into BRANCH [options] [label ..
   --dry-run       report what would happen, change nothing
 
 With no labels, every agent in the run that has a worktree branch is integrated, in the order
-the agents were created. Agent work is committed in its worktree first, because agents are
+they finished. Pass labels explicitly when dependencies require a different order. Agent work is committed in its worktree first, because agents are
 forbidden from committing.
 
 Refuses to start when the target is dirty, and stops at the first failure with the repository
