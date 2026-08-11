@@ -1,8 +1,10 @@
 # Evidence behind the defaults
 
 Collected by three `read-only` research agents dispatched with this skill, then checked against
-the local Codex 0.147 installation. Vendor claims are labeled as such; anything unverified is
-marked.
+the local Codex 0.147 installation, and later re-audited by two more agents against the source
+archive. Vendor claims are labeled as such. Figures from development runs are marked as
+observations: their run directories were deleted during cleanup, so they are reproducible by
+re-running rather than by opening a retained artifact.
 
 ## When fan-out helps and when it hurts
 
@@ -65,7 +67,7 @@ Read from the 0.147 source archive and confirmed against the installed binary.
   invocation; nothing is inherited from the original run. Root options belong before the
   `resume` subcommand — verified by running `codex exec -C dir -s read-only … resume <thread>`.
 - Resume replays the saved thread as input. A one-line follow-up on a long research thread was
-  metered at over 300K input tokens, so continuations are budgeted, never assumed free.
+  metered at over 300K input tokens (development observation, run directory not retained), so continuations are budgeted, never assumed free.
 - No supported channel exists for sending input into a running `codex exec`; stdin is consumed
   to EOF at start, and SIGINT maps to a graceful turn interrupt. The experimental
   `codex app-server` exposes `turn/steer` and `turn/interrupt` for genuinely steerable work.
@@ -73,11 +75,13 @@ Read from the 0.147 source archive and confirmed against the installed binary.
   properties required, `additionalProperties: false`, no `allOf`/`oneOf`/`if`/`not`, 10 levels
   of nesting, 5,000 properties, and 120,000 schema characters. The wrapper pre-checks these.
 - JSONL event types are `thread.started`, `turn.started`, `turn.completed`, `turn.failed`,
-  `item.started`, `item.updated`, `item.completed`, and a fatal `error`. Item payloads include
+  `item.started`, `item.updated`, `item.completed`, and `error`. A top-level `error` is a
+  notification, not a verdict: reconnect notices use it while the turn keeps running, so
+  terminal status comes from `turn.failed` or a non-zero process exit. Item payloads include
   `command_execution` with exit codes and `file_change` with paths. An interrupted turn emits no
   terminal event, so process exit is also checked.
-- Useful but unadopted: config profiles (`-p`) for named worker configurations, `--strict-config`
-  for version drift, execpolicy `.rules` as a deterministic command guard (preview), a dedicated
+- Adopted since: config profiles, exposed as `--profile` and the `profile` job key.
+- Useful but unadopted: `--strict-config` for version drift, execpolicy `.rules` as a deterministic command guard (preview), a dedicated
   `CODEX_HOME` for namespace isolation, and `--ephemeral` when no resume is needed.
 
 Gaps the research could not close: no published production comparison of worktree versus

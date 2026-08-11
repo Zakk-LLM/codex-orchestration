@@ -88,7 +88,9 @@ def scan_unregistered(known):
         except OSError:
             continue
         argv = [a.decode(errors="replace") for a in argv]
-        if not argv or os.path.basename(argv[0]) != "codex" or argv[1:2] != ["exec"]:
+        # `e` is the documented alias for `exec`; root options may precede the subcommand.
+        sub = next((a for a in argv[1:] if not a.startswith("-")), None)
+        if not argv or os.path.basename(argv[0]) != "codex" or sub not in ("exec", "e"):
             continue
         pid = int(entry.name)
         if state(pid) in (None, "Z") or descends_from(pid, known):

@@ -40,9 +40,14 @@ its own dependency install and build output.
 
 Review each branch on its own, then integrate deliberately:
 
+Agents are forbidden from committing, so their work is still uncommitted in the worktree: a
+branch diff alone shows nothing. Look at the working tree, then let `codex_merge.sh` commit and
+integrate it, or commit it yourself first.
+
 ```sh
-git -C /path/to/repo diff main...codex/cache        # what this agent actually changed
-git -C /path/to/repo merge --no-ff codex/cache      # you merge, never the agent
+"$CODEX_SKILL/scripts/codex_worktrees.sh" "$RUN" --diff main   # branch diff plus uncommitted work
+"$CODEX_SKILL/scripts/codex_merge.sh" --run-dir "$RUN" --repo /path/to/repo --into main \
+  --check "pytest -q"                                          # commits, merges, verifies, rolls back
 ```
 
 Merge in dependency order, run the tests after each merge rather than only at the end, and when

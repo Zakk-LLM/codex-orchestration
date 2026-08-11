@@ -2,8 +2,17 @@
 # Summarize every agent in a run directory: state, cost, thread id, result head.
 set -uo pipefail
 
-RUN_DIR=${1:-}
-[ -n "$RUN_DIR" ] || { echo "usage: codex_status.sh <run-dir> [--full]" >&2; exit 2; }
+case "${1:-}" in
+  -h|--help|"")
+    cat <<'EOF'
+Usage: codex_status.sh <run-dir> [--full]
+
+Prints one row per agent (state, duration, output tokens), the run's token totals, and each
+agent's thread id with a truncated head of its result. --full prints results untruncated.
+EOF
+    exit 0 ;;
+esac
+RUN_DIR=$1
 FULL=${2:-}
 
 python3 - "$RUN_DIR" "$FULL" <<'PY'

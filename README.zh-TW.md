@@ -10,7 +10,7 @@ Codex Orchestration 讓協調代理把工作分派給多個 Codex CLI 工作代�
 
 **上下文**。工作代理在自己的上下文視窗內探索，只回傳受限的結果。本專案自己的研究執行中，三個工作代理合計消耗 1260 萬輸入 token，協調者只讀了三個結果檔；那些探索過程從未進入協調者的上下文。
 
-**依難度分配成本**。`--tier` 同時決定推理深度與模型，機械性工作因此不會用最高推理深度執行，也不會留在昂貴的對話裡。
+**依難度分配成本**。`--tier` 逐任務決定推理深度，綁定 `CODEX_TIER_<TIER>_MODEL` 後同時決定模型，機械性工作因此不再以最高推理深度執行。
 
 **獨立性**。工作代理沒有協調者的推理記憶，無法繼承協調者的錯誤假設，這正是它能作為第二意見的原因。
 
@@ -32,7 +32,7 @@ cd codex-orchestration
 ./install.sh
 ```
 
-預設以符號連結安裝到本機已存在的代理目錄。符號連結要求來源目錄保持不變；需要移動或刪除來源目錄時，先解除安裝或改用 `--copy`。
+預設以符號連結安裝到三個支援的代理，必要時建立其技能目錄；只安裝部分代理時明確列出目標。符號連結要求來源目錄保持不變；需要移動或刪除來源目錄時，先解除安裝或改用 `--copy`。
 
 ```bash
 ./install.sh claude codex
@@ -129,7 +129,9 @@ scripts/codex_verify.sh "$RUN" auth-cache \
   --check "pytest tests/test_auth.py -q" --check "ruff check src/"
 ```
 
-`verify.json` 記錄改動檔案、越界檔案，以及每條命令的離開碼與輸出尾段；建置產物另行列出，不算越界。其餘需要判斷的步驟仍由協調者執行：逐行讀 diff、跑反向對照確認測試在沒有該修改時確實失敗、檢查是否有削弱斷言或吞掉例外這類靜默通過。研究結果同樣處理，抽查來源並確認引述數字確實出現在該頁。完整流程見 [references/review-gate.md](references/review-gate.md)。
+`verify.json` 記錄改動檔案、越界檔案，以及每條命令的離開碼與輸出尾段。檢查執行後會重新盤點一次，因此檢查本身寫出的檔案同樣受範圍閘門檢驗。建置產物另行列出，不算越界。目標若不是 git 倉庫則直接拒絕，因為沒有變更清單時判定沒有意義。
+
+其餘需要判斷的步驟仍由協調者執行：逐行讀 diff、跑反向對照確認測試在沒有該修改時確實失敗、檢查是否有削弱斷言或吞掉例外這類靜默通過。研究結果同樣處理，抽查來源並確認引述數字確實出現在該頁。完整流程見 [references/review-gate.md](references/review-gate.md)。
 
 ## 即時補充資訊
 
@@ -157,7 +159,7 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
     result.json 或 last.txt    最後回覆
     verify.json                審查閘門：範圍檢查與每條驗收命令的結果
     thread.txt                 thread id，供修正回合與續作
-    meta.json                  離開碼、耗時、token 用量、逾時與停滯旗標、改動檔案
+    meta.json                  離開碼、耗時、token 用量、逾時與停滯旗標、起始 commit
 <run>/REVIEW.md                每個代理的審查結論
 ```
 
@@ -173,7 +175,7 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
 | `workspace-write` | 可寫 `--cwd` 與各個 `--add-dir` | 所有實作工作 |
 | `danger-full-access` | 不受限 | 未取得使用者當次明確同意即不使用 |
 
-`--network` 只在任務確實需要連線與檢索時加入，`--approve-for-me` 只在代理需要合法提權時加入。腳本不提供 `--dangerously-bypass-approvals-and-sandbox`。
+`--network` 授予 shell 的網路存取，且只在 `workspace-write` 之下生效；`read-only` 沙箱沒有網路權限，`curl` 與安裝程式在其中無法執行。Codex 內建的網頁搜尋是另一回事，執行於伺服器端且預設啟用，所以 `read-only` 的研究代理仍可檢索。`--approve-for-me` 只在代理需要合法提權時加入。腳本不提供 `--dangerously-bypass-approvals-and-sandbox`。
 
 ## 依任務調度
 
@@ -186,13 +188,13 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
 | `deep` | `high` | 跨多檔案的修改、難以定位的缺陷、需保持行為的重構 | 1800–3600 |
 | `frontier` | `xhigh` | 架構決策、並行與效能問題、需求含糊 | 3600–7200 |
 
-`--tier` 同時設定推理深度與模型。匯出 `CODEX_TIER_<TIER>_MODEL` 即可把某一級綁定到指定模型；未設定的級別使用 Codex 設定檔預設值，`--model` 與 `--effort` 可對單一代理覆寫。`--effort max` 保留給 `frontier` 已在同一問題上失敗兩次的情形。
+`--tier` 一定設定推理深度，只有在匯出對應的 `CODEX_TIER_<TIER>_MODEL` 時才設定模型；沒有綁定時各級都使用 Codex 設定檔的模型，節省的只有推理深度。`--model` 與 `--effort` 可對單一代理覆寫。`--effort max` 保留給 `frontier` 已在同一問題上失敗兩次的情形。
 
 依難度評級，不依重要性。一次執行中多數工作應落在 `cheap` 與 `standard`；全部都是 `deep` 的執行代表沒有分級。難以判斷時先派 `cheap`，因為失敗的低成本嘗試比不必要的高成本嘗試便宜，而且它的輸出通常能讓重試的規格更精確。
 
 時限是失控保護而非進度表，估算後放大約三倍。大任務配短時限最糟：工作代理在修改到一半被結束，留下半套變更且沒有報告。`--stall` 另外處理無進度的情形，在沒有任何事件超過設定秒數時提前中斷。
 
-並行數由 `codex_capacity.sh` 依核心數、可用記憶體、負載與任務類型（`light`、`medium`、`heavy`）計算，機器繁忙時自動減半，`--per-agent-mb` 可覆寫記憶體估計。混合任務分組計算，並保留餘裕給協調者自己執行的測試。
+並行數由 `codex_capacity.sh` 依核心數、可用記憶體、負載與任務類型（`light`、`medium`、`heavy`）計算，機器繁忙時自動減半，`--per-agent-mb` 可覆寫記憶體估計，另有上限 8 與 `CODEX_MAX_AGENTS` 的剩餘名額兩道限制。混合任務分組計算，並保留餘裕給協調者自己執行的測試。
 
 ## 中斷、續作與重新派工
 
@@ -211,7 +213,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache-cont \
 
 重試要分類。語義失敗不重送相同提示，改為附上審查證據的定向修正，或重新界定範圍後另派代理。
 
-傳輸失敗屬於另一種情況。Codex 會送出形如 `Reconnecting... n/5 (unexpected status 502 …)` 的非終止 `error` 事件，重試五次後放棄；`meta.json` 記錄 `reconnects` 與 `transient_failure`，狀態表顯示 `TRANSIENT`。任務本身沒有問題，因此不改寫規格，也不靜默重打同一個端點。應立即帶著證據回報使用者——重連次數、端點、供應商的 request id——由使用者決定等待上游恢復，或立刻續作保留下來的 thread。thread id 保存在 `thread.txt`，所以詢問不會損失任何工作。
+傳輸失敗屬於另一種情況。Codex 會送出形如 `Reconnecting... n/5 (unexpected status 502 …)` 的非終止 `error` 事件，達到設定的重試上限後放棄，預設五次，可由 `stream_max_retries` 調整；`meta.json` 記錄 `reconnects` 與 `transient_failure`，狀態表顯示 `TRANSIENT`。任務本身沒有問題，因此不改寫規格，也不靜默重打同一個端點。應立即帶著證據回報使用者——重連次數、端點、供應商的 request id——由使用者決定等待上游恢復，或立刻續作保留下來的 thread。thread id 保存在 `thread.txt`，所以詢問不會損失任何工作。
 
 ## 基底漂移與原子合併
 
@@ -238,7 +240,7 @@ scripts/codex_merge.sh --run-dir "$RUN" --repo /path/to/repo --into main \
 - `codex exec` 會讀取繼承而來的 stdin，因此 `codex_agent.sh` 以任務規格檔作為 stdin；手寫呼叫需要 `< /dev/null`。
 - `codex exec` 沒有內建時間上限，全部呼叫以 `timeout` 包裝並先送 SIGINT，因為 Codex 會將其轉為正常的回合中斷。
 - 全部選項都是根選項，必須放在 `resume` 子命令之前；續作不繼承原本的沙箱、工作目錄、模型與工作區範圍，每次都要重述完整策略。
-- `--output-schema` 由 CLI 原樣轉發，錯誤結構只會在付費派工之後被 API 拒絕，因此 `codex_agent.sh` 事先檢查已知的結構化輸出子集。
+- CLI 只確認 `--output-schema` 是可讀的 JSON，其餘原樣轉發，不支援的結構要到付費派工之後才被 API 拒絕，因此 `codex_agent.sh` 事先檢查已知的結構化輸出子集，包含大小與深度上限。
 - 兩個代理寫入同一檔案會互相覆蓋且無法在派工當下偵測，需以 worktree 與 `PLAN.md` 的檔案歸屬預防。
 
 其餘失敗情形見 [references/troubleshooting.md](references/troubleshooting.md)，預設值背後的量測見 [references/evidence.md](references/evidence.md)。

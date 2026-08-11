@@ -15,8 +15,14 @@ Create the file before dispatching (an empty one is fine) so the worker's first 
 EOF
 }
 
-RUN=${1:-}; LABEL=${2:-}; shift 2 || { usage >&2; exit 2; }
+case "${1:-}" in -h|--help|"") usage; exit 0 ;; esac
+RUN=$1; LABEL=${2:-}; shift 2 2>/dev/null || { usage >&2; exit 2; }
 [ -n "$RUN" ] && [ -n "$LABEL" ] || { usage >&2; exit 2; }
+
+# A label is a directory name, never a path: `../x` would write outside the run.
+case "$LABEL" in
+  */*|.|..|"") echo "invalid label: $LABEL (no path separators)" >&2; exit 2 ;;
+esac
 
 DIR="$RUN/agents/$LABEL"
 NOTES="$DIR/NOTES.md"

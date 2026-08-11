@@ -21,8 +21,9 @@ changes; commit or discard them first.
 EOF
 }
 
-RUN=${1:-}; ACTION=${2:-}; ARG=${3:-}
-[ -n "$RUN" ] && [ -n "$ACTION" ] || { usage >&2; exit 2; }
+case "${1:-}" in -h|--help|"") usage; exit 0 ;; esac
+RUN=$1; ACTION=${2:-}; ARG=${3:-}
+[ -n "$ACTION" ] || { usage >&2; exit 2; }
 [ -d "$RUN/worktrees" ] || { echo "no worktrees under $RUN"; exit 0; }
 
 # Every agent records the repository it came from; take the first one that used a worktree.

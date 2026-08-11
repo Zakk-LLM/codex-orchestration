@@ -16,8 +16,8 @@ Every task spec forbids workers from running history-rewriting git commands.
 project's own research run, workers consumed 12.6M input tokens between them while the
 orchestrator read three result files; that exploration never entered the orchestrator's context.
 
-**Cost per unit of difficulty.** `--tier` picks reasoning depth and model together, so
-mechanical work never runs at frontier depth and never sits in an expensive conversation.
+**Cost per unit of difficulty.** `--tier` picks the reasoning depth per task, and the model too
+once `CODEX_TIER_<TIER>_MODEL` is bound, so mechanical work stops running at frontier depth.
 
 **Independence.** A worker starts with no memory of the orchestrator's reasoning, so it cannot
 inherit a mistaken assumption — which is what makes it usable as a second opinion.
@@ -41,8 +41,9 @@ cd codex-orchestration
 ./install.sh
 ```
 
-The default installs a symlink for every agent present on the machine. A symlink requires the
-source directory to stay put; uninstall first before moving or deleting it, or use `--copy`.
+The default installs a symlink for all three supported agents, creating their skill directories
+if needed; name targets explicitly to install for only some. A symlink requires the source
+directory to stay put; uninstall first before moving or deleting it, or use `--copy`.
 
 ```bash
 ./install.sh claude codex
@@ -179,8 +180,10 @@ scripts/codex_verify.sh "$RUN" auth-cache \
 ```
 
 It records the changed files, the out-of-scope files, and every command with its exit code and
-output tail in `verify.json`. Build artifacts are separated out rather than reported as scope
-violations. The remaining steps need judgment and stay manual: read the diff line by line, run
+output tail in `verify.json`. The inventory is taken again after the checks, so a file a check
+itself wrote also faces the scope gate. Build artifacts are listed separately rather than
+counted as scope violations, and a target that is not a git repository is refused outright,
+because without a change inventory a verdict would mean nothing. The remaining steps need judgment and stay manual: read the diff line by line, run
 a negative control so a passing test is known to fail without the change, and look for silent
 passing such as weakened assertions or swallowed exceptions. Research output is checked the
 same way, by fetching a sample of the sources and confirming the quoted numbers appear there.
@@ -220,7 +223,7 @@ unsuitable: event logs are large and vanish on reboot.
     result.json | last.txt     final answer
     verify.json                review gate: scope check and every acceptance command run
     thread.txt                 thread id, for fix rounds and continuations
-    meta.json                  exit code, duration, usage, timeout and stall flags, files touched
+    meta.json                  exit code, duration, usage, timeout/stall flags, base commit
 <run>/REVIEW.md                verdict per agent
 ```
 
@@ -237,9 +240,11 @@ The sandbox is the permission boundary and defaults to the least that can do the
 | `workspace-write` | writes under `--cwd` and each `--add-dir` | all implementation work |
 | `danger-full-access` | unrestricted | never without the user's explicit approval |
 
-`--network` is added only when the task genuinely fetches or searches, `--approve-for-me` only
-when a worker legitimately needs to escalate. The scripts deliberately do not expose
-`--dangerously-bypass-approvals-and-sandbox`.
+`--network` grants shell network access and only under `workspace-write`; the read-only sandbox
+has no network permission, so `curl` and installers cannot run there. Codex's built-in web
+search is separate, server-side, and on by default, which is why a `read-only` research agent
+can still search. `--approve-for-me` is added only when a worker legitimately needs to escalate.
+The scripts deliberately do not expose `--dangerously-bypass-approvals-and-sandbox`.
 
 ## Scheduling by task
 
@@ -252,9 +257,9 @@ Effort, timeout, and concurrency all follow the task. None is a fixed value.
 | `deep` | `high` | changes across several files, non-obvious bugs, behavior-preserving refactors | 1800–3600 |
 | `frontier` | `xhigh` | architecture, concurrency, performance, vague requirements | 3600–7200 |
 
-`--tier` sets reasoning depth and model together. Export `CODEX_TIER_<TIER>_MODEL` to bind a
-tier to a model; unset tiers use the Codex config default, and `--model` or `--effort`
-overrides a tier for one agent. `--effort max` remains for a problem a `frontier` agent has
+A tier always sets the reasoning depth, and sets the model only when `CODEX_TIER_<TIER>_MODEL`
+is exported for it; without a binding every tier uses the Codex config's model, so the saving
+is effort-only. `--model` or `--effort` overrides a tier for one agent. `--effort max` remains for a problem a `frontier` agent has
 already failed twice.
 
 The timeout is a runaway guard, not a schedule: estimate the work, then roughly triple it. A
@@ -264,8 +269,9 @@ has emitted no event for the configured number of seconds.
 
 Concurrency comes from `codex_capacity.sh`, which reads cores, available memory, and load
 average, weights them by workload class (`light`, `medium`, `heavy`), halves the result on a
-busy machine, and accepts `--per-agent-mb`. Mixed runs are budgeted per group, with headroom
-left for the orchestrator's own test runs.
+busy machine, and accepts `--per-agent-mb`. It is additionally capped at 8, and at the free
+share of `CODEX_MAX_AGENTS`. Mixed runs are budgeted per group, with headroom left for the
+orchestrator's own test runs.
 
 ## Interruption, continuation, and re-dispatch
 
@@ -295,7 +301,8 @@ Classify retries. A semantic failure never gets the same prompt again: send the 
 back as a targeted repair, or re-scope and dispatch fresh.
 
 A transport failure is different. Codex emits non-terminal `error` events shaped
-`Reconnecting... n/5 (unexpected status 502 …)` and gives up after five attempts; `meta.json`
+`Reconnecting... n/5 (unexpected status 502 …)` and gives up after the configured maximum, five
+by default and adjustable through `stream_max_retries`; `meta.json`
 then carries `reconnects` and `transient_failure: true`, and the status table shows
 `TRANSIENT`. Nothing about the task was wrong, so the spec is not rewritten and the endpoint is
 not hammered again silently. Report it with the evidence — reconnect count, endpoint, provider
@@ -340,9 +347,9 @@ that pass alone can fail together.
 - All options are root options and belong before the `resume` subcommand. A resumed run inherits
   no sandbox, working directory, model, or workspace roots from the original, so the full policy
   is repeated every time.
-- The CLI forwards `--output-schema` unvalidated; an invalid schema is rejected by the API only
-  after the dispatch is paid for, so `codex_agent.sh` pre-checks the documented Structured
-  Outputs subset.
+- The CLI checks only that `--output-schema` is readable JSON and forwards the rest, so an
+  unsupported construct is rejected by the API after the dispatch is paid for; `codex_agent.sh`
+  pre-checks the documented Structured Outputs subset, including its size and depth limits.
 - Two agents writing one file overwrite each other with nothing detecting it at dispatch time.
   Worktrees and file ownership in `PLAN.md` prevent it.
 

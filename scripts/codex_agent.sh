@@ -101,6 +101,8 @@ fi
 [ -n "$PROMPT_FILE" ] || [ -n "$PROMPT_TEXT" ] || { echo "--prompt-file or --prompt is required" >&2; exit 2; }
 case "$EFFORT" in low|medium|high|xhigh|max) ;; *) echo "bad --effort: $EFFORT" >&2; exit 2 ;; esac
 case "$SANDBOX" in read-only|workspace-write|danger-full-access) ;; *) echo "bad --sandbox: $SANDBOX" >&2; exit 2 ;; esac
+case "$ADMISSION" in wait|refuse|off) ;; *) echo "bad --admission: $ADMISSION (wait|refuse|off)" >&2; exit 2 ;; esac
+case "$LABEL" in */*|.|..) echo "invalid label: $LABEL (no path separators)" >&2; exit 2 ;; esac
 
 CWD=$(cd "$CWD" && pwd) || exit 2
 OUT="$RUN_DIR/agents/$LABEL"
@@ -152,6 +154,27 @@ if s.get("type") != "object":
 walk(s)
 if depth_seen > 10:
     problems.append(f"$: nesting depth {depth_seen} exceeds the documented limit of 10")
+# The remaining documented limits, checked here so the rejection is free rather than paid for.
+text = json.dumps(s)
+if len(text) > 120_000:
+    problems.append(f"$: schema is {len(text)} characters, over the 120000 limit")
+def count(node):
+    if not isinstance(node, dict):
+        return 0, 0
+    props = len(node.get("properties", {}) or {})
+    enums = len(node.get("enum", []) or [])
+    for sub in list((node.get("properties") or {}).values()) + \
+               list((node.get("$defs") or {}).values()) + \
+               (node.get("anyOf") or []) + ([node["items"]] if "items" in node else []):
+        p, e = count(sub)
+        props += p
+        enums = max(enums, e)
+    return props, enums
+n_props, n_enum = count(s)
+if n_props > 5000:
+    problems.append(f"$: {n_props} properties, over the 5000 limit")
+if n_enum > 1000:
+    problems.append(f"$: an enum has {n_enum} values, over the 1000 limit")
 if problems:
     sys.exit("schema rejected before dispatch:\n  " + "\n  ".join(problems))
 PY
@@ -206,10 +229,14 @@ ARGS=(exec --json --skip-git-repo-check -C "$CWD" -s "$SANDBOX" -o "$RESULT")
 ARGS+=(-c "model_reasoning_effort=$EFFORT")
 for d in ${ADD_DIRS+"${ADD_DIRS[@]}"}; do ARGS+=(--add-dir "$d"); done
 if [ "$NETWORK" = 1 ]; then
-  # This key has moved between versions; unknown keys are ignored without --strict-config.
+  # This grants shell network access, and only under workspace-write: the read-only sandbox has
+  # no network permission at all. Codex's built-in web search is a separate, server-side tool
+  # that is enabled by default and works in every sandbox, so research agents do not need this.
+  if [ "$SANDBOX" = read-only ]; then
+    echo "note: --network does not grant shell network access under read-only;" >&2
+    echo "      built-in web search still works, use workspace-write for curl or installers" >&2
+  fi
   ARGS+=(-c "sandbox_workspace_write.network_access=true")
-  ARGS+=(-c 'network_access="enabled"')
-  ARGS+=(-c "tools.web_search=true")
 fi
 [ "$APPROVE" = 1 ] && ARGS+=(--approve-for-me)
 [ -n "$MODEL" ] && ARGS+=(-m "$MODEL")
@@ -268,11 +295,26 @@ fi
 
 # Register the live agent so another window can see what this one is running.
 REG_META=$(mktemp)
-printf '{"label":"%s","cwd":"%s","run_dir":"%s","tier":"%s","effort":"%s","sandbox":"%s"}\n' \
-  "$LABEL" "$CWD" "$RUN_DIR" "$TIER" "$EFFORT" "$SANDBOX" > "$REG_META"
+# Built by a JSON serializer: a label or path containing a quote or backslash would otherwise
+# produce invalid JSON and the agent would silently vanish from the machine-wide view.
+LABEL="$LABEL" CWD="$CWD" RUN_DIR="$RUN_DIR" TIER="$TIER" EFFORT="$EFFORT" SANDBOX="$SANDBOX" \
+  python3 -c 'import json, os, sys
+json.dump({k.lower(): os.environ[k] or None
+           for k in ("LABEL", "CWD", "RUN_DIR", "TIER", "EFFORT", "SANDBOX")},
+          open(sys.argv[1], "w"))' "$REG_META" \
+  || echo "warning: could not build registry metadata for $LABEL" >&2
 "$HERE/codex_agents.sh" --register "$CODEX_PID" "$REG_META" 2>/dev/null
 rm -f "$REG_META"
-trap '"$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null' EXIT INT TERM
+# A signal to the wrapper must reach the worker: otherwise the run is reported finished while
+# codex keeps writing to the workspace and keeps holding the admission slot.
+cleanup() {
+  kill -INT "$CODEX_PID" 2>/dev/null
+  [ -n "${WATCHER:-}" ] && kill "$WATCHER" 2>/dev/null
+  "$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
+}
+trap cleanup EXIT
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
 
 wait "$CODEX_PID"; CODE=$?
 "$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
@@ -325,6 +367,7 @@ meta = {
     "failed_commands": failed_cmds,
     "files_touched": sorted(files),
     "errors": errors[:5],
+    "error_count": len(errors),
     "timed_out": code in (124, 137) and stalled != "1",
     "stalled": stalled == "1",
     "reconnects": reconnects,

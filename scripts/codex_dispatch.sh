@@ -14,8 +14,9 @@ Usage: codex_dispatch.sh --run-dir DIR --jobs FILE [--weight light|medium|heavy]
 FILE is JSONL, one job per line. Recognized keys, all optional except label:
 
   {"label":"cache", "tier":"deep", "cwd":"/repo", "sandbox":"workspace-write",
-   "worktree":true, "timeout":3600, "stall":300, "schema":"/path/schema.json",
-   "network":false, "prompt_file":"/path/prompt.md", "effort":"high", "model":"...",
+   "worktree":true, "worktree_base":"main", "timeout":3600, "stall":300,
+   "schema":"/path/schema.json", "network":false, "approve_for_me":false,
+   "prompt_file":"/path/prompt.md", "effort":"high", "model":"...",
    "add_dir":["/other"], "profile":"..."}
 
 prompt_file defaults to <run-dir>/agents/<label>/prompt.md. Jobs run hardest-tier-first, so
@@ -42,6 +43,12 @@ done
 
 CAP=$("$HERE/codex_capacity.sh" "$WEIGHT" 2>/dev/null) || CAP=3
 [ "$MAX" -gt 0 ] 2>/dev/null && [ "$MAX" -lt "$CAP" ] && CAP=$MAX
+# Capacity reaches zero when the machine-wide cap is already taken. Launching one job anyway
+# is correct: codex_agent.sh queues on the slot lock. A zero here would spin forever instead.
+if [ "${CAP:-0}" -lt 1 ]; then
+  CAP=1
+  echo "machine is at the global cap; jobs will queue on the slot lock one at a time" >&2
+fi
 echo "dispatching with concurrency $CAP (weight $WEIGHT)" >&2
 
 # Expand each job into a complete codex_agent.sh argument line, hardest tier first.

@@ -82,7 +82,10 @@ Layout:
 
 ```
 <run>/PLAN.md                 your decomposition and acceptance criteria
+<run>/jobs.jsonl              the fan-out, one job per line, for codex_dispatch.sh
 <run>/schema/<name>.json      output schemas
+<run>/worktrees/<label>/      that agent's isolated checkout, branch codex/<label>
+<run>/logs/<label>.dispatch.log
 <run>/agents/<label>/prompt.md NOTES.md events.jsonl stderr.log result.json|last.txt
                      thread.txt meta.json verify.json
 <run>/REVIEW.md               your findings per agent, with the verdict
@@ -107,7 +110,8 @@ has free, rather than from a fixed number:
 ```
 
 `light` is reading and drafting, `medium` is editing plus a targeted test, `heavy` is full
-builds, whole test suites, or containers. The script reads cores, available memory, and load
+builds, whole test suites, or containers. The answer is also capped at 8 regardless of the
+machine, and never exceeds the free share of `CODEX_MAX_AGENTS`. The script reads cores, available memory, and load
 average, and halves the answer on a busy machine; override its memory estimate with
 `--per-agent-mb` when you know the real cost. Mixed runs are budgeted per group: three heavy
 compile agents and two light readers, not five of whatever the first estimate said. Leave room
@@ -133,7 +137,9 @@ say when to re-read it.
 
 ### 4. Hand over the skills the worker needs
 
-A non-interactive worker applies a skill only when the spec names it. List what Codex can see:
+Naming a skill in the spec guarantees it is used. Codex 0.147 also instructs workers to use a
+skill whose description clearly matches the task, so a relevant skill may be applied without
+being named — naming it is how you make that deterministic. List what Codex can see:
 
 ```sh
 ls "${CODEX_HOME:-$HOME/.codex}/skills"
@@ -145,8 +151,9 @@ the instruction to read it first. Skills installed for you are not automatically
 Codex: if the one you rely on is missing from that directory, either paste its operative rules
 into the spec, or ask the user before installing it for Codex.
 
-Repository instruction files (`AGENTS.md`, `CLAUDE.md`) are read by the worker only if they sit
-in or above its `--cwd`. When they do not, paste the rules that apply.
+Codex reads `AGENTS.override.md` and `AGENTS.md` from the worker's `--cwd` and above. It does
+not read `CLAUDE.md` unless that name is added to `project_doc_fallback_filenames` in the Codex
+config, so rules that live only in `CLAUDE.md` must be pasted into the spec.
 
 ### 5. Pick effort, sandbox, and timeout
 
@@ -160,9 +167,11 @@ cheap work stays cheap without a decision per flag:
 | `deep` | `high` | changes spanning several files, non-obvious bugs, behavior-preserving refactors |
 | `frontier` | `xhigh` | architecture decisions, concurrency and performance work, ambiguous requirements |
 
-Export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`, or
-`CODEX_TIER_FRONTIER_MODEL` to bind a tier to a specific model; unset tiers use the Codex
-config default, and `--model` or `--effort` overrides the tier for one agent. `--effort max`
+A tier always sets the reasoning effort. It sets the model only when the matching binding
+exists: export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`,
+or `CODEX_TIER_FRONTIER_MODEL` to bind one. Without a binding every tier runs the model from
+the Codex config, so the cost separation is effort-only until they are set. `--model` or
+`--effort` overrides the tier for one agent. `--effort max`
 stays available as a last resort after a `frontier` agent failed twice on the same problem.
 
 Rate the task, not its importance. Most work in a run is `cheap` or `standard`; a run where
@@ -179,9 +188,12 @@ the job:
 | `workspace-write` | writes under `--cwd` plus each `--add-dir` | all implementation work |
 | `danger-full-access` | unrestricted | never without the user's explicit approval in this session |
 
-Add `--network` only when the task genuinely fetches something; add `--approve-for-me` when a
-worker legitimately needs to escalate a command instead of failing. Grant write access to the
-smallest directory that contains the agent's files.
+`--network` grants *shell* network access, and only under `workspace-write` — the read-only
+sandbox has no network permission at all, so `curl` and package installers cannot work there.
+Codex's built-in web search is a different thing: it is server-side, on by default, and works
+in every sandbox, which is why a `read-only` research agent can still search. Add
+`--approve-for-me` when a worker legitimately needs to escalate a command instead of failing,
+and grant write access to the smallest directory that contains the agent's files.
 
 `--timeout` is a runaway guard, not a schedule, and it scales with the task — not with your
 patience. A big task on a short timeout is the worst combination available: the wrapper kills
@@ -323,8 +335,10 @@ code, so you can see exactly what the worker ran and where it went wrong. A fail
 inside a run is normal exploration — only `turn.failed`, a top-level `error`, or a non-zero
 process exit means the agent failed, and `meta.json` separates the two.
 
-Kill early instead of waiting out a worker that is not progressing. `--stall SEC` interrupts an
-agent that has emitted no event for that long, which catches a hung command or a retry loop
+`meta.json` distinguishes the two guard kills: a wall-clock overrun sets `timed_out`, a silent
+worker sets `stalled`. Both exit 124 or 137, so classify from the flags rather than the exit
+code. Kill early instead of waiting out a worker that is not progressing: `--stall SEC`
+interrupts an agent that has emitted no event for that long, which catches a hung command or a retry loop
 without waiting for the full timeout. Repeated identical failing commands in `events.jsonl` are
 the other early signal: the worker is stuck on something your spec cannot fix, so interrupt it
 and re-scope.
@@ -403,7 +417,10 @@ it happens.
 6. Write the verdict and its evidence into `<run>/REVIEW.md`, including a line stating what was
    *not* verified.
 
-Steps 2 and 3 are mechanized, and the gate returns `not-verified` when no check ran:
+Steps 2 and 3 are mechanized. The gate returns `not-verified` when no check ran, when a check
+failed, or when a file outside the declared `Write:` scope changed — including files a check
+itself created, since the inventory is taken again afterwards. It requires a git repository,
+because without one there is no change inventory and a verdict would mean nothing:
 
 ```sh
 "$CODEX_SKILL/scripts/codex_verify.sh" "$RUN" auth-cache \
@@ -452,14 +469,15 @@ the two files involved beats a resumed thread that has been wrong twice.
 Retry classification matters more than retry count. A semantic failure never gets the same
 prompt again: send the verifier's evidence back, or re-scope and dispatch fresh.
 
-A transport failure is a different situation and is not yours to decide silently. Codex emits
-non-terminal `error` events shaped `Reconnecting... n/5 (unexpected status 502 …)` and gives up
-after five attempts; `meta.json` then reports `reconnects` and `transient_failure: true`, and
+A transport failure is a different situation and is not yours to decide silently. Codex emits non-terminal `error` events shaped
+`Reconnecting... n/5 (unexpected status 502 …)` and gives up after the configured maximum,
+five by default and adjustable through `stream_max_retries`; `meta.json` then reports `reconnects` and `transient_failure: true`, and
 the status table shows `TRANSIENT`. Nothing about the task was wrong, so do not rewrite the
 spec, and do not quietly re-dispatch into an endpoint that is still failing.
 
-Tell the user immediately, with the evidence — the reconnect count, the endpoint, the provider
-request ids from `events.jsonl` — and ask which they want: wait because the upstream is down, or
+Tell the user immediately, with the evidence — the reconnect count, the endpoint, and any
+provider request id the message happens to carry, since the event only guarantees a `message`
+field — and ask which they want: wait because the upstream is down, or
 resume the preserved thread now and continue where the worker stopped. The thread id survives in
 `thread.txt` either way, so no work is lost by asking. The same applies when the connection drops
 mid-run, the machine reboots, or authentication expires.
@@ -534,17 +552,20 @@ restatement of the task. Every one of those keeps a round trip from happening.
 
 ## Common task shapes
 
-- **Feature**: one `read-only` agent maps the code, then parallel `workspace-write` agents by
-  module, then you integrate and review.
-- **Bug hunt**: several parallel `read-only` agents with different lenses (correctness,
-  boundaries, concurrency, error paths), each returning a findings schema; you deduplicate,
-  then dispatch fixes for the confirmed ones only.
+- **Feature**: one `read-only` `standard` agent maps the code, then `workspace-write` agents by
+  module, each in its own `--worktree`, then you merge with `codex_merge.sh` and review.
+- **Bug hunt**: parallel `read-only` agents with different lenses (correctness, boundaries,
+  concurrency, error paths), each returning a findings schema; you deduplicate, then dispatch
+  `cheap` or `standard` fixes for the confirmed ones only.
 - **README or docs**: a `read-only` agent collects the facts, a `workspace-write` agent drafts,
   you verify every command and claim it makes. Apply the repository's writing rules yourself —
   workers do not know them unless you paste them into the spec.
 - **Research and data collection**: `read-only` plus `--network`, always with a schema, plus a
   requirement that every claim carries a source. Verify the sources; workers do fabricate them.
-- **Migration or sweep**: one agent per file batch, identical spec, disjoint scopes.
+- **Migration or sweep**: one `cheap` agent per file batch, identical spec, disjoint scopes,
+  one worktree each; merge in batches so a failure never rolls back the whole sweep.
+- **Auditing this or another skill**: `read-only` agents that must demonstrate each finding by
+  running something, with a schema that requires a failure scenario and a fix per finding.
 
 ## References
 

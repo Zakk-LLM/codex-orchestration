@@ -71,8 +71,11 @@ for target in "${targets[@]}"; do
         printf '%-9s source already lives at the install path\n' "$target"; continue
       fi
       mkdir -p "$base"
-      if [ -e "$dest" ] && [ ! -L "$dest" ] && [ ! -f "$dest/SKILL.md" ]; then
-        printf '%-9s refusing to overwrite %s\n' "$target" "$dest" >&2; exit 1
+      # Only replace a directory that is this skill. Another package's SKILL.md is not ours.
+      if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+        if ! { [ -f "$dest/SKILL.md" ] && grep -q "^name: $NAME\$" "$dest/SKILL.md"; }; then
+          printf '%-9s refusing to overwrite %s (not this skill)\n' "$target" "$dest" >&2; exit 1
+        fi
       fi
       rm -rf "$dest"
       if [ "$transport" = link ]; then

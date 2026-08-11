@@ -41,7 +41,9 @@ done
 
 WAITED=0
 while :; do
-  OUT=$(RUN_DIR="$RUN" STATE_FILE="$STATE" python3 <<'PY'
+  # Two orchestrators watching one run must not both claim the same completion, so the
+  # read-modify-write of the seen-set happens under a lock.
+  OUT=$(flock "$STATE.lock" env RUN_DIR="$RUN" STATE_FILE="$STATE" python3 <<'PY'
 import json, os, pathlib, sys
 
 run = pathlib.Path(os.environ["RUN_DIR"])
@@ -52,20 +54,25 @@ except (OSError, json.JSONDecodeError):
     seen = {}
 
 agents = [a for a in sorted((run / "agents").glob("*")) if a.is_dir()]
-if not agents:
+# A directory holding only a prepared spec has not been dispatched: events.jsonl appears when
+# the worker actually starts. Counting it as running would hide "nothing was dispatched".
+dispatched = [a for a in agents if (a / "events.jsonl").exists() or (a / "meta.json").exists()]
+if not dispatched:
     sys.exit(3)
 
 changed, running, done = [], 0, 0
-for a in agents:
+for a in dispatched:
     meta = a / "meta.json"
     if not meta.exists():
         running += 1
         continue
-    done += 1
     try:
         m = json.loads(meta.read_text())
     except (json.JSONDecodeError, OSError):
+        # A meta file being written right now is not a finished agent.
+        running += 1
         continue
+    done += 1
     if m.get("exit_code") == 0:
         state = "OK"
     elif m.get("transient_failure"):

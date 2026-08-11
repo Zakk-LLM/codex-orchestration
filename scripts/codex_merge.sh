@@ -43,17 +43,20 @@ git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "$REPO is not a git
 
 CURRENT=$(git -C "$REPO" rev-parse --abbrev-ref HEAD)
 [ "$CURRENT" = "$INTO" ] || { echo "checkout $INTO first (currently on $CURRENT)" >&2; exit 2; }
-if [ -n "$(git -C "$REPO" status --porcelain)" ]; then
-  echo "the integration tree is dirty; commit or stash before merging" >&2
-  git -C "$REPO" status --short >&2
+# Tracked modifications block integration because a merge would mix them in. Pre-existing
+# untracked files do not: they are recorded and left exactly as they are.
+if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
+  echo "the integration tree has uncommitted tracked changes; commit or stash before merging" >&2
+  git -C "$REPO" status --short --untracked-files=no >&2
   exit 2
 fi
 
 # Collect candidates in creation order, with the base each agent actually built on.
-mapfile -t JOBS < <(RUN_DIR="$RUN" WANTED="${LABELS[*]:-}" python3 <<'PY'
+WANTED_JSON=$(python3 -c 'import json,sys; json.dump(sys.argv[1:], sys.stdout)' ${LABELS+"${LABELS[@]}"})
+mapfile -t JOBS < <(RUN_DIR="$RUN" WANTED="$WANTED_JSON" python3 <<'PY'
 import json, os, pathlib
 run = pathlib.Path(os.environ["RUN_DIR"])
-wanted = [w for w in os.environ.get("WANTED", "").split() if w]
+wanted = json.loads(os.environ.get("WANTED") or "[]")
 rows = []
 for meta in (run / "agents").glob("*/meta.json"):
     try:
@@ -73,6 +76,10 @@ PY
 [ "${#JOBS[@]}" -gt 0 ] || { echo "no agent branches to integrate in $RUN" >&2; exit 2; }
 
 START_SHA=$(git -C "$REPO" rev-parse HEAD)
+# `git reset --hard` restores tracked content only, so the untracked set is captured too:
+# a failed check that generated files would otherwise leave them behind.
+UNTRACKED_BEFORE=$(git -C "$REPO" ls-files --others --exclude-standard | sort)
+DONE=0
 echo "integrating ${#JOBS[@]} branch(es) into $INTO at $START_SHA" >&2
 
 rollback() {
@@ -80,7 +87,15 @@ rollback() {
   git -C "$REPO" merge --abort 2>/dev/null
   git -C "$REPO" rebase --abort 2>/dev/null
   git -C "$REPO" reset --hard "$START_SHA" >/dev/null
+  # Remove only what appeared during this run; anything that was already untracked stays.
+  comm -13 <(printf '%s\n' "$UNTRACKED_BEFORE") \
+           <(git -C "$REPO" ls-files --others --exclude-standard | sort) |
+  while IFS= read -r f; do [ -n "$f" ] && rm -f "$REPO/$f"; done
 }
+
+# An interrupt during a check would otherwise leave the target half-integrated.
+trap '[ "$DONE" = 1 ] || { echo "interrupted" >&2; rollback; }; exit 130' INT
+trap '[ "$DONE" = 1 ] || { echo "terminated" >&2; rollback; }; exit 143' TERM HUP
 
 for job in "${JOBS[@]}"; do
   IFS=$'\t' read -r LABEL BRANCH BASE WT <<< "$job"
@@ -132,8 +147,13 @@ for job in "${JOBS[@]}"; do
       rollback; exit 1
     fi
   done
-  echo "   merged and verified" >&2
+  if [ "${#CHECKS[@]}" -eq 0 ]; then
+    echo "   merged; NOT verified — no --check was given" >&2
+  else
+    echo "   merged and verified" >&2
+  fi
 done
+DONE=1
 
 if [ "$DRY" = 1 ]; then
   echo "dry run: nothing changed" >&2
