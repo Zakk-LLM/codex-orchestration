@@ -280,8 +280,33 @@ research result, read the code the next task will touch, update `PLAN.md`. Poll 
 never on a hunch, and never sleep through a window you could have used.
 
 ```sh
-"$CODEX_SKILL/scripts/codex_wait.sh" "$RUN" --handled auth-cache,docs   # blocks, prints "<label> <state>"
+"$CODEX_SKILL/scripts/codex_watch.sh" "$RUN" --timeout 120   # bounded: returns work, or the window
+"$CODEX_SKILL/scripts/codex_wait.sh" "$RUN" --handled auth-cache,docs   # blocks until one lands
 "$CODEX_SKILL/scripts/codex_status.sh" "$RUN"                           # full picture when you want it
+```
+
+`codex_watch.sh` is the anti-idling primitive, and its exit code decides what happens next:
+
+| exit | meaning | what you do |
+|------|---------|-------------|
+| 0 | agents changed state; labels printed | handle them now — review, fix round, merge |
+| 1 | nothing changed before the deadline | spend the window on work that needs no agent |
+| 2 | every agent finished and was reported | close the run |
+| 3 | no agents yet | dispatch something |
+
+Exit 1 is an instruction, not a reason to call it again. Choose `--timeout` as the time until
+your next useful action, not as how long an agent might take: with specs to write or tests to
+run, use 60–120s and go do them; with genuinely nothing left, a longer block is fine because
+blocking costs nothing while polling costs a turn.
+
+If the host you run in can wake you — a scheduled tick, a background task that notifies on
+completion, a job runner — prefer being woken over blocking, and keep a bounded watch as the
+fallback so a silent failure cannot hang the run forever. The pattern is the same either way:
+
+```sh
+while out=$("$CODEX_SKILL/scripts/codex_watch.sh" "$RUN" --timeout 120); do
+  handle "$out"        # exit 0 path
+done                   # exit 1 -> do queued work, then loop; exit 2 -> done
 ```
 
 The loop: wait → review that one agent (step 8) → dispatch its fix round if needed → add it to

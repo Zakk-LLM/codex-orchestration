@@ -140,6 +140,17 @@ requires a real `exec` invocation.
 
 ## Never idle-wait
 
+```bash
+scripts/codex_watch.sh "$RUN" --timeout 120
+```
+
+A bounded wait that always returns something actionable: exit 0 means agents changed state and
+the labels are printed, exit 1 means nothing changed and the window belongs to work that needs
+no agent, exit 2 means the run is finished, exit 3 means nothing has been dispatched. Exit 1 is
+an instruction, not a reason to call it again. Pick the timeout as the time until the next
+useful action rather than as how long an agent might take, and prefer a host-provided wake-up
+over blocking when one exists, keeping the bounded watch as the fallback.
+
 From the first dispatch until the last review, the orchestrator is either processing a returned
 agent or doing work that does not depend on one — writing the next spec, running tests on what
 already merged, verifying research sources. Waiting for the whole batch before looking at
