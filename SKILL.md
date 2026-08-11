@@ -411,8 +411,17 @@ what you rejected, and what you changed yourself.
 
 ## Keeping your own context small
 
-The fan-out only pays off if the workers' exploration stays out of your context. Rules that
-keep it there:
+The context that needs protecting is yours, the dispatcher's. A worker's context is disposable:
+it is created for one task, dies with it, and nothing is carried forward except the result file.
+So let workers read whatever they need — 200 files, a full test log, three failed approaches —
+and never split a task, shorten a spec, or tell a worker to "be brief" in order to save its
+context. Only the final report is bounded, because that is the part that lands in you.
+
+The one place a worker's context costs anything is `--resume`, which replays the whole thread as
+input. That is a bill, not a limit, and it is the reason a fresh agent often beats continuing a
+long thread.
+
+Rules that keep worker exploration out of your context:
 
 - Read `result.json` and `verify.json`. Open `events.jsonl` only when something failed, and
   then filter it rather than reading it whole.

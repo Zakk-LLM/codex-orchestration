@@ -86,9 +86,13 @@ Every script documents its options under `--help`.
 whatever differs from the defaults — and runs the fan-out hardest-tier-first at a concurrency
 derived from the machine. `--dry-run` prints the commands it would run.
 
-Worker exploration stays out of the orchestrator's context by design: read `result.json` and
-`verify.json`, use `codex_status.sh` as the digest, open `events.jsonl` only when something
-failed, and refer to artifacts by path instead of quoting them.
+The context that needs protecting is the dispatcher's. A worker's context is disposable — it is
+created for one task and dies with it — so workers read whatever they need, and no task is split
+or shortened to save a worker's context. Only the final report is bounded, because that is the
+part that reaches the orchestrator: read `result.json` and `verify.json`, use `codex_status.sh`
+as the digest, open `events.jsonl` only when something failed, and refer to artifacts by path
+instead of quoting them. The single exception is `--resume`, which replays a whole thread as
+input; that is a cost, not a limit.
 
 ## When fan-out is worth it
 

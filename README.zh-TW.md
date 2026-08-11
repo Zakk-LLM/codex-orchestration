@@ -73,7 +73,7 @@ scripts/codex_worktrees.sh "$RUN" --diff main
 
 `codex_dispatch.sh` 讀取 JSONL 工作清單，每行一個代理，指定 label、難度級別與與預設不同的選項，然後依難度由高到低派工，並行數取自本機容量。`--dry-run` 只印出將執行的命令。
 
-工作代理的探索過程不進入協調者的上下文：只讀 `result.json` 與 `verify.json`，以 `codex_status.sh` 作為摘要，失敗時才打開 `events.jsonl`，並以路徑引用產物而非貼上內容。
+需要保護的是派工方的上下文。工作代理的上下文用完即棄，為單一任務建立、隨任務結束消失，因此工作代理要讀多少就讀多少，不會為了節省它的上下文而拆分任務或縮短規格。只有最終報告受限，因為那是進入協調者的部分。協調者只讀 `result.json` 與 `verify.json`，以 `codex_status.sh` 作為摘要，失敗時才打開 `events.jsonl`，並以路徑引用產物而非貼上內容。唯一的例外是 `--resume` 會把整個 thread 當作輸入重播，那是成本，不是限制。
 
 ## 何時才分派多代理
 
