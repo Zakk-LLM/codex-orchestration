@@ -10,6 +10,23 @@ The division of labor is fixed. Workers produce code and drafts only. The orches
 real diff, runs the tests, and writes the verdict; commits, merges, and releases stay with it.
 Every task spec forbids workers from running history-rewriting git commands.
 
+## Why delegate to Codex
+
+**Context.** A worker explores in its own context window and returns a bounded result. In this
+project's own research run, workers consumed 12.6M input tokens between them while the
+orchestrator read three result files; that exploration never entered the orchestrator's context.
+
+**Cost per unit of difficulty.** `--tier` picks reasoning depth and model together, so
+mechanical work never runs at frontier depth and never sits in an expensive conversation.
+
+**Independence.** A worker starts with no memory of the orchestrator's reasoning, so it cannot
+inherit a mistaken assumption — which is what makes it usable as a second opinion.
+
+**Durability.** Each unit of work is a thread, a run directory, and a schema-checked result. A
+worker that dies is resumed; a result that must be parsed is JSON, not prose.
+
+The cost is one review pass per worker. Managing that trade is what the rest of this skill does.
+
 ## Requirements
 
 - Codex CLI 0.40 or newer, already logged in
@@ -56,6 +73,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache \
   --schema "$RUN/schema/impl.json"
 
 scripts/codex_note.sh "$RUN" auth-cache "Token TTL is 900s."
+scripts/codex_dispatch.sh --run-dir "$RUN" --jobs "$RUN/jobs.jsonl" --weight medium
 scripts/codex_verify.sh "$RUN" auth-cache --check "pytest -q"
 scripts/codex_wait.sh "$RUN" --handled docs
 scripts/codex_status.sh "$RUN"
@@ -63,6 +81,14 @@ scripts/codex_worktrees.sh "$RUN" --diff main
 ```
 
 Every script documents its options under `--help`.
+
+`codex_dispatch.sh` takes a JSONL job list — one line per agent, naming its label, tier, and
+whatever differs from the defaults — and runs the fan-out hardest-tier-first at a concurrency
+derived from the machine. `--dry-run` prints the commands it would run.
+
+Worker exploration stays out of the orchestrator's context by design: read `result.json` and
+`verify.json`, use `codex_status.sh` as the digest, open `events.jsonl` only when something
+failed, and refer to artifacts by path instead of quoting them.
 
 ## When fan-out is worth it
 
@@ -178,13 +204,17 @@ when a worker legitimately needs to escalate. The scripts deliberately do not ex
 
 Effort, timeout, and concurrency all follow the task. None is a fixed value.
 
-| Effort | Use for | `--timeout` |
-|---|---|---|
-| `low` | mechanical edits, renames, formatting, boilerplate | 300–600 |
-| `medium` | default: contained feature, documentation, tests for one module | 900–1800 |
-| `high` | changes across several files, non-obvious bugs, behavior-preserving refactors | 1800–3600 |
-| `xhigh` | architecture, concurrency, performance, vague requirements | 3600–7200 |
-| `max` | last resort after `xhigh` failed twice on the same problem | 7200+ |
+| `--tier` | effort | Use for | `--timeout` |
+|---|---|---|---|
+| `cheap` | `low` | mechanical edits, renames, formatting, boilerplate | 300–600 |
+| `standard` | `medium` | default: contained feature, documentation, tests for one module | 900–1800 |
+| `deep` | `high` | changes across several files, non-obvious bugs, behavior-preserving refactors | 1800–3600 |
+| `frontier` | `xhigh` | architecture, concurrency, performance, vague requirements | 3600–7200 |
+
+`--tier` sets reasoning depth and model together. Export `CODEX_TIER_<TIER>_MODEL` to bind a
+tier to a model; unset tiers use the Codex config default, and `--model` or `--effort`
+overrides a tier for one agent. `--effort max` remains for a problem a `frontier` agent has
+already failed twice.
 
 The timeout is a runaway guard, not a schedule: estimate the work, then roughly triple it. A
 large task on a short timeout is the worst case — the worker dies mid-edit, leaving a
@@ -220,9 +250,16 @@ start a fresh agent with a sharper spec when the context is small, reconstructib
 workspace, or already proven wrong, since a mistaken assumption propagates through every later
 turn.
 
-Classify retries. Dropped connections, API errors, and killed processes are transient and resume
-as-is. A semantic failure never gets the same prompt again: send the review evidence back as a
-targeted repair, or re-scope and dispatch fresh.
+Classify retries. A semantic failure never gets the same prompt again: send the review evidence
+back as a targeted repair, or re-scope and dispatch fresh.
+
+A transport failure is different. Codex emits non-terminal `error` events shaped
+`Reconnecting... n/5 (unexpected status 502 …)` and gives up after five attempts; `meta.json`
+then carries `reconnects` and `transient_failure: true`, and the status table shows
+`TRANSIENT`. Nothing about the task was wrong, so the spec is not rewritten and the endpoint is
+not hammered again silently. Report it with the evidence — reconnect count, endpoint, provider
+request ids — and let the user choose between waiting for the upstream and resuming the
+preserved thread. The thread id survives in `thread.txt`, so asking costs no work.
 
 ## Known constraints
 

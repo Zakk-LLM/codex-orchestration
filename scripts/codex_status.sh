@@ -10,7 +10,8 @@ python3 - "$RUN_DIR" "$FULL" <<'PY'
 import json, pathlib, sys
 run = pathlib.Path(sys.argv[1])
 full = sys.argv[2] == "--full"
-agents = sorted((run / "agents").glob("*")) if (run / "agents").is_dir() else []
+agents = sorted(a for a in (run / "agents").glob("*") if a.is_dir()) \
+    if (run / "agents").is_dir() else []
 if not agents:
     print(f"no agents under {run}")
     raise SystemExit(1)
@@ -25,7 +26,16 @@ for a in agents:
     u = m.get("usage") or {}
     tin += u.get("input_tokens", 0)
     tout += u.get("output_tokens", 0)
-    state = "OK" if m["exit_code"] == 0 else ("TIMEOUT" if m.get("timed_out") else f"FAIL({m['exit_code']})")
+    if m["exit_code"] == 0:
+        state = "OK"
+    elif m.get("transient_failure"):
+        state = "TRANSIENT"      # upstream/transport, not the task: ask before re-dispatching
+    elif m.get("stalled"):
+        state = "STALLED"
+    elif m.get("timed_out"):
+        state = "TIMEOUT"
+    else:
+        state = f"FAIL({m['exit_code']})"
     if m["exit_code"] == 0 and not m.get("result_file"):
         state = "NO-RESULT"
     rows.append((a.name, state, f"{m['duration_s']}s",

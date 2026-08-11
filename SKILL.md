@@ -8,6 +8,29 @@ description: Drive the Codex CLI as a fleet of worker agents while you stay the 
 Codex writes; you plan, supervise, review, and ship. Codex agents never commit, never
 push, never deploy, and never decide that their own output is acceptable.
 
+## Why delegate to Codex at all
+
+Four reasons, in the order they matter:
+
+**Context.** A worker explores in its own context window — file reads, greps, failed commands,
+dead ends — and returns a bounded result. In this skill's own research run the workers consumed
+12.6M input tokens between them while the orchestrator read three result files. That work would
+otherwise have landed in your context and pushed out the plan you are holding.
+
+**Cost per unit of difficulty.** Each task is dispatched at the cheapest tier that can do it,
+so mechanical work does not run at frontier reasoning depth and does not sit in an expensive
+conversation. A tier is chosen per task, not per session.
+
+**Independence.** A worker starts with no memory of your reasoning. It cannot inherit your
+mistaken assumption, which is exactly what makes it usable as a second opinion on code you
+already looked at.
+
+**Durability.** Each unit of work is a thread, a run directory, and a schema-checked result. A
+worker that dies is resumed; a result that must be parsed is JSON, not prose.
+
+The cost is one review pass per worker, paid by you. That is the trade this whole skill exists
+to manage.
+
 ## Preflight
 
 Run once per session, before dispatching anything:
@@ -120,15 +143,25 @@ in or above its `--cwd`. When they do not, paste the rules that apply.
 
 ### 5. Pick effort, sandbox, and timeout
 
-Effort maps to task difficulty, not to importance. Costs rise steeply.
+Difficulty decides both the reasoning depth and the model. `--tier` sets them together, so the
+cheap work stays cheap without a decision per flag:
 
-| effort | use for |
-|--------|---------|
-| `low` | mechanical edits, renames, formatting, boilerplate, extracting known facts |
-| `medium` | default: a contained feature, a README, tests for existing code, structured research |
-| `high` | changes spanning several files, non-obvious bugs, refactors with behavior to preserve |
-| `xhigh` | architecture decisions, concurrency and performance work, ambiguous requirements |
-| `max` | last resort after a `xhigh` agent failed twice on the same problem |
+| `--tier` | effort | use for |
+|----------|--------|---------|
+| `cheap` | `low` | mechanical edits, renames, formatting, boilerplate, extracting known facts |
+| `standard` | `medium` | default: a contained feature, a README, tests for existing code |
+| `deep` | `high` | changes spanning several files, non-obvious bugs, behavior-preserving refactors |
+| `frontier` | `xhigh` | architecture decisions, concurrency and performance work, ambiguous requirements |
+
+Export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`, or
+`CODEX_TIER_FRONTIER_MODEL` to bind a tier to a specific model; unset tiers use the Codex
+config default, and `--model` or `--effort` overrides the tier for one agent. `--effort max`
+stays available as a last resort after a `frontier` agent failed twice on the same problem.
+
+Rate the task, not its importance. Most work in a run is `cheap` or `standard`; a run where
+everything is `deep` is a run that was never triaged. When unsure, dispatch `cheap` first: a
+failed cheap attempt costs less than an unnecessary deep one, and its output usually sharpens
+the spec for the retry.
 
 Sandbox is the permission boundary and defaults to the most restrictive option that can do
 the job:
@@ -164,13 +197,22 @@ that finishes early costs nothing, while one killed at 90% costs the whole run.
 ```sh
 "$CODEX_SKILL/scripts/codex_agent.sh" \
   --run-dir "$RUN" --label auth-cache \
-  --cwd /path/to/repo --sandbox workspace-write --effort high \
+  --cwd /path/to/repo --sandbox workspace-write --tier deep \
   --prompt-file "$RUN/agents/auth-cache/prompt.md" \
-  --schema "$RUN/schema/impl.json" --timeout 1800
+  --schema "$RUN/schema/impl.json" --timeout 1800 --stall 300
 ```
 
-Run each dispatch as a background command so several agents progress at once, and so a stuck
-agent cannot block you. The script prints a one-line JSON summary and writes `meta.json`.
+For a whole fan-out, describe the jobs once and let the dispatcher handle ordering and
+concurrency — hardest tier first, capacity from the machine:
+
+```sh
+"$CODEX_SKILL/scripts/codex_dispatch.sh" --run-dir "$RUN" --jobs "$RUN/jobs.jsonl" \
+  --weight medium --max 4        # --dry-run prints the commands without running them
+```
+
+Each job line names a label, a tier, and the flags that differ from the defaults; the spec is
+read from `<run>/agents/<label>/prompt.md` unless the job says otherwise. Run either form as a
+background command so several agents progress at once, and so a stuck agent cannot block you. The script prints a one-line JSON summary and writes `meta.json`.
 
 For anything you must parse rather than read, pass `--schema`: Codex is then forced to answer
 with JSON matching that schema, which removes prose-parsing failures. See
@@ -346,15 +388,48 @@ fresh agent when the context is small, easy to reconstruct from the workspace, o
 mistaken assumption in a thread propagates into every later turn, and a clean spec that names
 the two files involved beats a resumed thread that has been wrong twice.
 
-Retry classification matters more than retry count. A transient failure — API error, network
-drop, a killed process — resumes as-is. A semantic failure never gets the same prompt again:
-send the verifier's evidence back, or re-scope and dispatch fresh.
+Retry classification matters more than retry count. A semantic failure never gets the same
+prompt again: send the verifier's evidence back, or re-scope and dispatch fresh.
+
+A transport failure is a different situation and is not yours to decide silently. Codex emits
+non-terminal `error` events shaped `Reconnecting... n/5 (unexpected status 502 …)` and gives up
+after five attempts; `meta.json` then reports `reconnects` and `transient_failure: true`, and
+the status table shows `TRANSIENT`. Nothing about the task was wrong, so do not rewrite the
+spec, and do not quietly re-dispatch into an endpoint that is still failing.
+
+Tell the user immediately, with the evidence — the reconnect count, the endpoint, the provider
+request ids from `events.jsonl` — and ask which they want: wait because the upstream is down, or
+resume the preserved thread now and continue where the worker stopped. The thread id survives in
+`thread.txt` either way, so no work is lost by asking. The same applies when the connection drops
+mid-run, the machine reboots, or authentication expires.
 
 ### 10. Ship
 
 You perform every irreversible step: staging, commit messages, tags, PRs, merges, releases,
 deploys. Confirm with the user before anything outward-facing. Report what each agent produced,
 what you rejected, and what you changed yourself.
+
+## Keeping your own context small
+
+The fan-out only pays off if the workers' exploration stays out of your context. Rules that
+keep it there:
+
+- Read `result.json` and `verify.json`. Open `events.jsonl` only when something failed, and
+  then filter it rather than reading it whole.
+- Use `codex_status.sh` as the digest: it truncates each result to a readable head and prints
+  totals. `--full` exists for the one agent you actually need in detail.
+- Prefer a schema over prose. A 40-line JSON result is cheaper to hold and to compare than a
+  three-page report, and it cannot bury a caveat in paragraph six.
+- Refer to artifacts by path instead of quoting them. The run directory is the shared memory;
+  your context is not.
+- Summarize for the user from the diff and the check results, not from the worker's prose —
+  otherwise its framing propagates through you unverified.
+- Keep `REVIEW.md` to decisions and evidence lines. It is a record, not a transcript.
+
+The same discipline makes the exchange with workers efficient. A spec is a contract, so it is
+written once and completely; corrections go through `NOTES.md` while the agent runs; findings
+go back as facts with file and line, which is why a fix-round spec is five lines and not a
+restatement of the task. Every one of those keeps a round trip from happening.
 
 ## Common task shapes
 

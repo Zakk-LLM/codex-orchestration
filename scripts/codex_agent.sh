@@ -20,6 +20,9 @@ Workspace:
   --worktree-base B  branch or commit the worktree starts from  (default: HEAD)
 
 Model and limits:
+  --tier NAME        difficulty tier: cheap|standard|deep|frontier
+                     Sets effort, and the model when CODEX_TIER_<NAME>_MODEL is exported.
+                     --effort and --model override it.
   --effort LEVEL     low|medium|high|xhigh|max               (default: medium)
   --sandbox MODE     read-only|workspace-write|danger-full-access (default: read-only)
   --model NAME       model override
@@ -39,7 +42,8 @@ EOF
 }
 
 RUN_DIR=; LABEL=; PROMPT_FILE=; PROMPT_TEXT=; CWD=$PWD
-EFFORT=medium; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; RESUME=
+EFFORT=medium; EFFORT_SET=0; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; RESUME=
+TIER=
 NETWORK=0; APPROVE=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD
 
 while [ $# -gt 0 ]; do
@@ -54,7 +58,8 @@ while [ $# -gt 0 ]; do
       if [ $# -ge 2 ] && case "$2" in --*) false ;; *) true ;; esac; then WORKTREE=$2; shift 2
       else WORKTREE=@label; shift; fi ;;
     --worktree-base) WORKTREE_BASE=$2; shift 2 ;;
-    --effort) EFFORT=$2; shift 2 ;;
+    --tier) TIER=$2; shift 2 ;;
+    --effort) EFFORT=$2; EFFORT_SET=1; shift 2 ;;
     --sandbox) SANDBOX=$2; shift 2 ;;
     --schema) SCHEMA=$2; shift 2 ;;
     --model) MODEL=$2; shift 2 ;;
@@ -68,6 +73,23 @@ while [ $# -gt 0 ]; do
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# A tier is a difficulty statement: the cheapest model and effort that can do the job. Model
+# names stay in the environment, so nothing here assumes a particular provider's lineup.
+if [ -n "$TIER" ]; then
+  case "$TIER" in
+    cheap)    TIER_EFFORT=low ;;
+    standard) TIER_EFFORT=medium ;;
+    deep)     TIER_EFFORT=high ;;
+    frontier) TIER_EFFORT=xhigh ;;
+    *) echo "bad --tier: $TIER (cheap|standard|deep|frontier)" >&2; exit 2 ;;
+  esac
+  [ "$EFFORT_SET" = 1 ] || EFFORT=$TIER_EFFORT
+  if [ -z "$MODEL" ]; then
+    TIER_VAR="CODEX_TIER_$(printf '%s' "$TIER" | tr '[:lower:]' '[:upper:]')_MODEL"
+    eval "MODEL=\${$TIER_VAR:-}"
+  fi
+fi
 
 [ -n "$RUN_DIR" ] && [ -n "$LABEL" ] || { echo "--run-dir and --label are required" >&2; exit 2; }
 [ -n "$PROMPT_FILE" ] || [ -n "$PROMPT_TEXT" ] || { echo "--prompt-file or --prompt is required" >&2; exit 2; }
@@ -201,11 +223,12 @@ wait "$CODEX_PID"; CODE=$?
 END=$(date +%s)
 
 python3 - "$OUT" "$LABEL" "$CWD" "$EFFORT" "$SANDBOX" "$CODE" "$((END - START))" \
-         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$WORKTREE_BASE_SHA" <<'PY'
+         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$WORKTREE_BASE_SHA" "$MODEL" <<'PY'
 import json, sys, pathlib
-out, label, cwd, effort, sandbox, code, dur, resume, stalled, branch, base_sha = sys.argv[1:12]
+(out, label, cwd, effort, sandbox, code, dur, resume, stalled, branch, base_sha,
+ model) = sys.argv[1:13]
 out = pathlib.Path(out)
-thread, usage, errors, failed_cmds, files = None, {}, [], 0, set()
+thread, usage, errors, failed_cmds, files, reconnects = None, {}, [], 0, set(), 0
 for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
     line = line.strip()
     if not line.startswith("{"):
@@ -218,8 +241,11 @@ for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
         thread = ev["thread_id"]
     if ev.get("type") == "turn.completed":
         usage = ev.get("usage", {})
-    # A failed command item is normal exploration; only a turn-level failure is terminal.
-    if ev.get("type") in ("turn.failed", "error"):
+    # A failed command item is normal exploration, and a top-level `error` may be a retry
+    # notice ("Reconnecting... 1/5"), not a terminal failure. Both are counted, not obeyed.
+    if ev.get("type") == "error" and str(ev.get("message", "")).startswith("Reconnecting"):
+        reconnects += 1
+    elif ev.get("type") in ("turn.failed", "error"):
         errors.append(ev)
     item = ev.get("item") or {}
     if item.get("type") == "command_execution" and item.get("exit_code") not in (0, None):
@@ -233,7 +259,7 @@ if thread:
 result = out / "result.json" if (out / "result.json").exists() else out / "last.txt"
 code = int(code)
 meta = {
-    "label": label, "cwd": cwd, "effort": effort, "sandbox": sandbox,
+    "label": label, "cwd": cwd, "effort": effort, "sandbox": sandbox, "model": model or None,
     "resumed_from": resume or None, "exit_code": code, "duration_s": int(dur),
     "thread_id": thread, "usage": usage,
     "result_file": str(result) if result.exists() else None,
@@ -243,13 +269,17 @@ meta = {
     "errors": errors[:5],
     "timed_out": code in (124, 137) and stalled != "1",
     "stalled": stalled == "1",
+    "reconnects": reconnects,
+    # A run that died with no completed turn after reconnect attempts failed on transport,
+    # not on the task: resume it as-is instead of rewriting the spec.
+    "transient_failure": bool(code != 0 and reconnects and not usage),
     "worktree_branch": branch or None,
     "worktree_base": base_sha or None,
 }
 (out / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
 print(json.dumps({k: meta[k] for k in
       ("label", "exit_code", "duration_s", "thread_id", "result_file",
-       "timed_out", "stalled", "worktree_branch")}, ensure_ascii=False))
+       "timed_out", "stalled", "transient_failure", "worktree_branch")}, ensure_ascii=False))
 PY
 
 exit $CODE
