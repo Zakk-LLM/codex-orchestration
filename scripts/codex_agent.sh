@@ -18,6 +18,7 @@ Workspace:
   --add-dir DIR      extra writable dir (repeatable)
   --worktree [NAME]  run in a dedicated git worktree of --cwd, branch codex/<name>
   --worktree-base B  branch or commit the worktree starts from  (default: HEAD)
+  --allow-stale-base start a worktree from a base that is behind its upstream
 
 Model and limits:
   --tier NAME        difficulty tier: cheap|standard|deep|frontier
@@ -32,6 +33,7 @@ Model and limits:
 
 Behavior:
   --schema FILE      JSON Schema; the final message must match it
+  --admission MODE   wait|refuse|off - how to handle a full machine (default: wait)
   --resume THREAD    continue an existing thread id
   --network          allow network access and web search
   --approve-for-me   auto-review escalation requests instead of failing them
@@ -44,7 +46,9 @@ EOF
 RUN_DIR=; LABEL=; PROMPT_FILE=; PROMPT_TEXT=; CWD=$PWD
 EFFORT=medium; EFFORT_SET=0; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; RESUME=
 TIER=
-NETWORK=0; APPROVE=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD
+NETWORK=0; APPROVE=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD; ADMISSION=wait; ALLOW_STALE=0
+HERE=$(cd "$(dirname "$0")" && pwd)
+REG=${CODEX_REGISTRY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/codex-agents}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -58,6 +62,7 @@ while [ $# -gt 0 ]; do
       if [ $# -ge 2 ] && case "$2" in --*) false ;; *) true ;; esac; then WORKTREE=$2; shift 2
       else WORKTREE=@label; shift; fi ;;
     --worktree-base) WORKTREE_BASE=$2; shift 2 ;;
+    --allow-stale-base) ALLOW_STALE=1; shift ;;
     --tier) TIER=$2; shift 2 ;;
     --effort) EFFORT=$2; EFFORT_SET=1; shift 2 ;;
     --sandbox) SANDBOX=$2; shift 2 ;;
@@ -67,6 +72,7 @@ while [ $# -gt 0 ]; do
     --timeout) TIMEOUT=$2; shift 2 ;;
     --stall) STALL=$2; shift 2 ;;
     --resume) RESUME=$2; shift 2 ;;
+    --admission) ADMISSION=$2; shift 2 ;;
     --network) NETWORK=1; shift ;;
     --approve-for-me) APPROVE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -153,6 +159,11 @@ fi
 
 # A git worktree gives a write-capable agent its own checkout, so parallel agents cannot
 # overwrite each other's files. Conflicts move to merge time, where they are visible.
+# Every agent records the exact commit it started from. Without it, a review cannot tell
+# whether a diff was written against the tree that is being merged into.
+BASE_SHA=$(git -C "$CWD" rev-parse HEAD 2>/dev/null)
+BASE_REF=$(git -C "$CWD" rev-parse --abbrev-ref HEAD 2>/dev/null)
+
 WORKTREE_PATH=; WORKTREE_BRANCH=; WORKTREE_BASE_SHA=
 if [ -n "$WORKTREE" ]; then
   [ "$WORKTREE" = "@label" ] && WORKTREE=$LABEL
@@ -160,6 +171,20 @@ if [ -n "$WORKTREE" ]; then
   WORKTREE_BRANCH="codex/$WORKTREE"
   WORKTREE_PATH="$RUN_DIR/worktrees/$WORKTREE"
   WORKTREE_BASE_SHA=$(git -C "$CWD" rev-parse --verify "$WORKTREE_BASE" 2>/dev/null)
+  [ -n "$WORKTREE_BASE_SHA" ] || { echo "unknown --worktree-base: $WORKTREE_BASE" >&2; exit 2; }
+  # Agents must not build on a base that is already behind: the work would be reviewed and
+  # merged against a tree nobody is running.
+  UPSTREAM=$(git -C "$CWD" rev-parse --abbrev-ref --symbolic-full-name "$WORKTREE_BASE@{upstream}" 2>/dev/null || true)
+  if [ -n "$UPSTREAM" ]; then
+    BEHIND=$(git -C "$CWD" rev-list --count "$WORKTREE_BASE..$UPSTREAM" 2>/dev/null || echo 0)
+    if [ "${BEHIND:-0}" -gt 0 ] && [ "$ALLOW_STALE" = 0 ]; then
+      echo "base $WORKTREE_BASE is $BEHIND commit(s) behind $UPSTREAM;" >&2
+      echo "update it first, or pass --allow-stale-base if that is intended" >&2
+      exit 2
+    fi
+  fi
+  BASE_SHA=$WORKTREE_BASE_SHA
+  BASE_REF=$WORKTREE_BASE
   if [ ! -d "$WORKTREE_PATH" ]; then
     mkdir -p "$RUN_DIR/worktrees"
     if git -C "$CWD" show-ref --verify --quiet "refs/heads/$WORKTREE_BRANCH"; then
@@ -193,6 +218,30 @@ fi
 [ -n "$RESUME" ] && ARGS+=(resume "$RESUME")
 ARGS+=(-)   # prompt arrives on stdin, so no shell quoting can corrupt it
 
+# Slots are flock'd files in a shared directory, so the cap holds across terminals and
+# orchestrator sessions that know nothing about each other. The lock is held for the run.
+if [ "$ADMISSION" != off ]; then
+  mkdir -p "$REG/slots" 2>/dev/null
+  MAXA=${CODEX_MAX_AGENTS:-5}
+  SLOT_FD=
+  WAITED=0
+  while [ -z "$SLOT_FD" ]; do
+    for i in $(seq 1 "$MAXA"); do
+      exec {fd}>"$REG/slots/slot-$i" || continue
+      if flock -n "$fd"; then SLOT_FD=$fd; break; fi
+      exec {fd}>&-
+    done
+    [ -n "$SLOT_FD" ] && break
+    if [ "$ADMISSION" = refuse ]; then
+      echo "no free agent slot: $MAXA already running machine-wide (CODEX_MAX_AGENTS)" >&2
+      "$HERE/codex_agents.sh" --list >&2
+      exit 3
+    fi
+    [ "$WAITED" = 0 ] && echo "waiting for an agent slot ($MAXA in use machine-wide)" >&2
+    sleep 10; WAITED=$((WAITED + 10))
+  done
+fi
+
 START=$(date +%s)
 # stdin is the prompt file and nothing else: an inherited terminal stdin makes codex wait
 # forever. SIGINT first, because Codex turns it into a graceful turn interrupt.
@@ -217,16 +266,25 @@ if [ "$STALL" -gt 0 ] 2>/dev/null; then
   WATCHER=$!
 fi
 
+# Register the live agent so another window can see what this one is running.
+REG_META=$(mktemp)
+printf '{"label":"%s","cwd":"%s","run_dir":"%s","tier":"%s","effort":"%s","sandbox":"%s"}\n' \
+  "$LABEL" "$CWD" "$RUN_DIR" "$TIER" "$EFFORT" "$SANDBOX" > "$REG_META"
+"$HERE/codex_agents.sh" --register "$CODEX_PID" "$REG_META" 2>/dev/null
+rm -f "$REG_META"
+trap '"$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null' EXIT INT TERM
+
 wait "$CODEX_PID"; CODE=$?
+"$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
 [ -n "${WATCHER:-}" ] && kill "$WATCHER" 2>/dev/null
 [ -f "$OUT/.stalled" ] && { STALLED=1; rm -f "$OUT/.stalled"; }
 END=$(date +%s)
 
 python3 - "$OUT" "$LABEL" "$CWD" "$EFFORT" "$SANDBOX" "$CODE" "$((END - START))" \
-         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$WORKTREE_BASE_SHA" "$MODEL" <<'PY'
+         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$BASE_SHA" "$MODEL" "$BASE_REF" <<'PY'
 import json, sys, pathlib
 (out, label, cwd, effort, sandbox, code, dur, resume, stalled, branch, base_sha,
- model) = sys.argv[1:13]
+ model, base_ref) = sys.argv[1:14]
 out = pathlib.Path(out)
 thread, usage, errors, failed_cmds, files, reconnects = None, {}, [], 0, set(), 0
 for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
@@ -274,7 +332,8 @@ meta = {
     # not on the task: resume it as-is instead of rewriting the spec.
     "transient_failure": bool(code != 0 and reconnects and not usage),
     "worktree_branch": branch or None,
-    "worktree_base": base_sha or None,
+    "base_sha": base_sha or None,
+    "base_ref": base_ref or None,
 }
 (out / "meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
 print(json.dumps({k: meta[k] for k in

@@ -62,6 +62,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache \
   --schema "$RUN/schema/impl.json"
 
 scripts/codex_note.sh "$RUN" auth-cache "Token TTL 是 900 秒。"
+scripts/codex_agents.sh --list
 scripts/codex_dispatch.sh --run-dir "$RUN" --jobs "$RUN/jobs.jsonl" --weight medium
 scripts/codex_verify.sh "$RUN" auth-cache --check "pytest -q"
 scripts/codex_wait.sh "$RUN" --handled docs
@@ -91,6 +92,21 @@ scripts/codex_worktrees.sh "$RUN" --remove-merged main
 ```
 
 `--remove-merged` 只刪除已併入指定分支的工作區，未合併的工作不會遺失。含 submodule 的倉庫改用完整 clone，因為 git 對多個 superproject checkout 的支援不完整。
+
+## 一台機器，多個視窗
+
+其他協調者工作階段、其他終端機或手動啟動的代理同樣佔用本機與 API 額度，因此派工前先計入：
+
+```bash
+scripts/codex_agents.sh --list
+scripts/codex_agents.sh --slots
+```
+
+每個代理執行期間會登記自己並持有一個名額鎖，所以上限（`CODEX_MAX_AGENTS`，預設 5）在互不知情的工作階段之間仍然成立；`--admission refuse` 則直接失敗而不排隊。掛著的 Codex 互動視窗、殭屍行程、以及其他同名程式都不會被計入，因為存活判定依據登記項的 pid 與行程啟動時間，行程掃描也要求確實是 `exec` 呼叫。
+
+## 不空等
+
+從第一次派工到最後一次審查，協調者要麼在處理已返回的代理，要麼在做不依賴代理的工作，例如撰寫下一份規格、對已合併的部分執行測試、驗證研究來源。只有使用者明確要求「全部做完再檢查」時才等齊整批。能立刻修的迴歸優先於佇列中的其他工作，因為整合分支失敗時，後續全部待合併的代理都無法整合。
 
 ## 逐一審查，不要等齊
 
@@ -188,6 +204,26 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache-cont \
 重試要分類。語義失敗不重送相同提示，改為附上審查證據的定向修正，或重新界定範圍後另派代理。
 
 傳輸失敗屬於另一種情況。Codex 會送出形如 `Reconnecting... n/5 (unexpected status 502 …)` 的非終止 `error` 事件，重試五次後放棄；`meta.json` 記錄 `reconnects` 與 `transient_failure`，狀態表顯示 `TRANSIENT`。任務本身沒有問題，因此不改寫規格，也不靜默重打同一個端點。應立即帶著證據回報使用者——重連次數、端點、供應商的 request id——由使用者決定等待上游恢復，或立刻續作保留下來的 thread。thread id 保存在 `thread.txt`，所以詢問不會損失任何工作。
+
+## 基底漂移與原子合併
+
+每個代理都記錄自己的起始 commit，`--worktree` 拒絕已落後上游的基底，因此工作代理不會在已經沒有人使用的樹上開發。整合分支在代理執行期間前進時，漂移是可見且可修正的：
+
+```bash
+scripts/codex_worktrees.sh "$RUN" --drift main
+scripts/codex_worktrees.sh "$RUN" --rebase main
+```
+
+`--rebase` 會先提交未提交的工作再把已完成的分支移到新基底，並跳過代理仍在執行的工作區，因為在執行中的寫入者底下 rebase 會破壞進行中的修改。已 rebase 的分支要重新驗證，因為先前的檢查是在另一棵樹上執行的。
+
+整合對單一分支與整批都是原子的：
+
+```bash
+scripts/codex_merge.sh --run-dir "$RUN" --repo /path/to/repo --into main \
+  --check "pytest -q" --rebase
+```
+
+開始前目標分支必須乾淨。每個分支先在自己的工作區提交，以 `--no-ff` 合併，通過全部 `--check` 之後才處理下一個分支；衝突、rebase 失敗或檢查失敗都會把目標分支重設回本次執行開始時的 commit。記錄的基底不再是目標分支祖先的分支會被 rebase 或拒絕，不會靜默合併。檢查在每次合併後執行而非最後統一執行，因為兩個分支各自通過不代表合在一起也通過。
 
 ## 已知限制
 

@@ -73,6 +73,7 @@ scripts/codex_agent.sh --run-dir "$RUN" --label auth-cache \
   --schema "$RUN/schema/impl.json"
 
 scripts/codex_note.sh "$RUN" auth-cache "Token TTL is 900s."
+scripts/codex_agents.sh --list
 scripts/codex_dispatch.sh --run-dir "$RUN" --jobs "$RUN/jobs.jsonl" --weight medium
 scripts/codex_verify.sh "$RUN" auth-cache --check "pytest -q"
 scripts/codex_wait.sh "$RUN" --handled docs
@@ -120,6 +121,31 @@ scripts/codex_worktrees.sh "$RUN" --remove-merged main
 `--remove-merged` deletes only worktrees whose branch already landed in the given base, so
 unmerged work survives. Submodule-heavy repositories need a full clone per agent, because git
 documents incomplete support for multiple superproject checkouts.
+
+## One machine, many windows
+
+Agents started by another orchestrator session, another terminal, or by hand share this machine
+and this API quota, so they are counted before anything new is dispatched:
+
+```bash
+scripts/codex_agents.sh --list      # live agents machine-wide, with label, tier, and workspace
+scripts/codex_agents.sh --slots     # free slots against CODEX_MAX_AGENTS (default 5)
+```
+
+Each agent registers itself while it runs and holds one of the slot locks, so the cap holds
+across sessions that know nothing about each other; `--admission refuse` fails instead of
+queuing. An idle Codex TUI, a zombie, and an unrelated program named `codex` are never counted:
+liveness comes from the registry entry's pid and process start time, and the process scan
+requires a real `exec` invocation.
+
+## Never idle-wait
+
+From the first dispatch until the last review, the orchestrator is either processing a returned
+agent or doing work that does not depend on one — writing the next spec, running tests on what
+already merged, verifying research sources. Waiting for the whole batch before looking at
+anything is correct only when the user explicitly asked for it. A regression that can be fixed
+now is fixed ahead of the queue, because a broken integration branch blocks every agent still
+to be merged.
 
 ## Review one agent at a time
 
@@ -264,6 +290,35 @@ then carries `reconnects` and `transient_failure: true`, and the status table sh
 not hammered again silently. Report it with the evidence — reconnect count, endpoint, provider
 request ids — and let the user choose between waiting for the upstream and resuming the
 preserved thread. The thread id survives in `thread.txt`, so asking costs no work.
+
+## Base drift and atomic integration
+
+Every agent records the commit it started from, and `--worktree` refuses a base already behind
+its upstream, so no worker builds on a tree nobody is running. When the integration branch moves
+while agents are still working, the drift is visible and fixable:
+
+```bash
+scripts/codex_worktrees.sh "$RUN" --drift main
+scripts/codex_worktrees.sh "$RUN" --rebase main
+```
+
+`--rebase` commits pending work and moves finished branches onto the new base, and skips any
+worktree whose agent is live, because rebasing underneath a running writer corrupts work in
+flight. A rebased branch is re-verified, since the earlier check ran against a different tree.
+
+Integration is atomic per branch and for the run:
+
+```bash
+scripts/codex_merge.sh --run-dir "$RUN" --repo /path/to/repo --into main \
+  --check "pytest -q" --rebase        # --dry-run first
+```
+
+The target must be clean before it starts. Each branch is committed in its worktree, merged
+with `--no-ff`, and verified by every `--check` before the next branch is touched; a conflict, a
+failed rebase, or a failed check resets the target to the exact commit the run started from. A
+branch whose recorded base is no longer an ancestor of the target is rebased or refused, never
+merged silently. Checks run after every merge rather than once at the end, because two branches
+that pass alone can fail together.
 
 ## Known constraints
 

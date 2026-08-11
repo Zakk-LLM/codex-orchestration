@@ -13,6 +13,9 @@ Usage: codex_capacity.sh [light|medium|heavy] [--per-agent-mb N]
 
 Prints the suggested concurrency and the numbers it came from. Override the memory estimate
 with --per-agent-mb when you know what the workload actually costs.
+
+Codex agents started by other sessions or other terminals are counted: the answer never
+exceeds CODEX_MAX_AGENTS (default 5) minus what is already running machine-wide.
 EOF
 }
 
@@ -25,6 +28,56 @@ case "$WEIGHT" in
   *) echo "unknown weight: $WEIGHT" >&2; usage >&2; exit 2 ;;
 esac
 [ "${2:-}" = "--per-agent-mb" ] && PER=${3:?--per-agent-mb needs a value}
+
+# Agents started from other terminals or other orchestrator sessions count too: the API
+# quota and this machine are shared, and nothing else coordinates them.
+# The registry is authoritative for agents this wrapper started; the process scan catches
+# agents started by hand. Neither counts an idle Codex TUI, a zombie, or an unrelated
+# program that happens to be named codex.
+RUNNING=$(CODEX_REGISTRY_DIR="${CODEX_REGISTRY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/codex-agents}" python3 - <<'COUNT'
+import json, os, pathlib
+
+def field(pid, idx):
+    try:
+        stat = open(f"/proc/{pid}/stat").read()
+        return stat[stat.rindex(") ") + 2:].split()[idx]
+    except (OSError, ValueError, IndexError):
+        return None
+
+pids = set()
+reg = pathlib.Path(os.environ["CODEX_REGISTRY_DIR"])
+for f in reg.glob("*.json"):
+    try:
+        d = json.loads(f.read_text())
+    except (json.JSONDecodeError, OSError):
+        continue
+    pid = d.get("pid", 0)
+    if field(pid, 19) == str(d.get("start_ticks")) and field(pid, 0) not in (None, "Z"):
+        pids.add(pid)
+
+for entry in pathlib.Path("/proc").iterdir():
+    if not entry.name.isdigit():
+        continue
+    pid = int(entry.name)
+    try:
+        argv = (entry / "cmdline").read_bytes().split(b"\0")
+    except OSError:
+        continue
+    argv = [a.decode(errors="replace") for a in argv if a]
+    # Only a real `codex exec` run counts: the TUI has no subcommand, and a zombie is finished.
+    if not argv or os.path.basename(argv[0]) != "codex" or "exec" not in argv[1:2]:
+        continue
+    if field(pid, 0) in (None, "Z"):
+        continue
+    pids.add(pid)
+
+print(len(pids))
+COUNT
+)
+RUNNING=${RUNNING:-0}
+GLOBAL_MAX=${CODEX_MAX_AGENTS:-5}
+FREE=$(( GLOBAL_MAX - RUNNING ))
+[ "$FREE" -lt 0 ] && FREE=0
 
 CORES=$(nproc 2>/dev/null || echo 4)
 AVAIL_MB=$(awk '/MemAvailable/ {print int($2/1024)}' /proc/meminfo 2>/dev/null || echo 4096)
@@ -41,8 +94,15 @@ N=$BY_CPU
 [ "$N" -lt 1 ] && N=1
 # Beyond a handful the API queues anyway and the event logs stop being reviewable.
 [ "$N" -gt 8 ] && N=8
+# The global cap wins: it counts agents this session cannot see.
+[ "$N" -gt "$FREE" ] && N=$FREE
 
 printf '%s\n' "$N"
-printf 'weight=%s per-agent=%sMB cores=%s avail=%sMB load=%s cpu-cap=%s mem-cap=%s%s\n' \
-  "$WEIGHT" "$PER" "$CORES" "$AVAIL_MB" "$LOAD" "$BY_CPU" "$BY_MEM" \
+printf 'weight=%s per-agent=%sMB cores=%s avail=%sMB load=%s cpu-cap=%s mem-cap=%s running=%s/%s free=%s%s\n' \
+  "$WEIGHT" "$PER" "$CORES" "$AVAIL_MB" "$LOAD" "$BY_CPU" "$BY_MEM" "$RUNNING" "$GLOBAL_MAX" "$FREE" \
   "$([ "$BUSY" = 1 ] && echo ' (machine busy: halved)')" >&2
+if [ "$N" = 0 ]; then
+  printf 'no free slot: %s agents already running elsewhere (CODEX_MAX_AGENTS=%s)\n' \
+    "$RUNNING" "$GLOBAL_MAX" >&2
+fi
+exit 0

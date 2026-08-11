@@ -37,7 +37,14 @@ Run once per session, before dispatching anything:
 
 ```sh
 codex --version || echo "codex CLI not installed — stop and tell the user"
+"$CODEX_SKILL/scripts/codex_agents.sh" --list      # what other windows are already running
 ```
+
+Agents started by another orchestrator session, another terminal, or by hand are still using
+this machine and this API quota. The registry lists them, `codex_capacity.sh` subtracts them,
+and `codex_agent.sh` holds a lock for the whole run, so the machine-wide cap
+(`CODEX_MAX_AGENTS`, default 5) holds even between sessions that know nothing about each other.
+An idle Codex TUI is not an agent and is never counted.
 
 The scripts below assume `codex >= 0.40` with the `exec` subcommand. Set
 `CODEX_SKILL=<this skill's directory>` so the examples are copy-pasteable.
@@ -237,11 +244,40 @@ source:
 
 ### 7. Supervise — handle agents one at a time, as they land
 
+**Never sit idle while agents run.** This is not a preference. From the moment the first agent
+is dispatched until the last one is reviewed, you are either processing a returned agent or
+doing work that does not depend on one. Waiting for a batch to finish before looking at
+anything is only correct when the user explicitly asked for it — "finish everything, then
+review" — and that instruction has to come from them, not from you.
+
 Agents finish minutes apart: a `low`-effort edit returns in under a minute while an `xhigh`
-audit runs for twenty. Never block on the whole batch. Review each agent the moment it
-finishes and start its fix round while the others are still working — the slowest agent then
-costs nothing extra, and a spec-level mistake surfaces early enough to fix the remaining
-agents' specs.
+audit runs for twenty. Review each agent the moment it finishes and start its fix round while
+the others are still working — the slowest agent then costs nothing extra, and a spec-level
+mistake surfaces early enough to fix the remaining agents' specs.
+
+Every time the integration branch moves, the agents still running are now writing against an
+older base. Check for it immediately and keep it from turning into a merge surprise:
+
+```sh
+"$CODEX_SKILL/scripts/codex_worktrees.sh" "$RUN" --drift main   # who is behind, and who is live
+"$CODEX_SKILL/scripts/codex_worktrees.sh" "$RUN" --rebase main  # move the finished ones up
+```
+
+`--rebase` never touches a worktree whose agent is still running, because rebasing underneath a
+live writer corrupts work in flight. A running agent is told through `NOTES.md` that the base
+moved and what changed, and is rebased the moment it exits — before its review, since a rebase
+invalidates any check you already ran. Never let an agent finish, sit unrebased, and get merged
+hours later against a tree that has moved on.
+
+A regression you can fix now is fixed now, ahead of anything else in the queue: a broken build
+or a failing test on the integration branch blocks every agent still to be merged, so it is
+never left for later. Trivial fixes you can make in seconds are yours to make — do not spend a
+dispatch round trip on a typo.
+
+While no agent is waiting on you, the time still belongs to the run: write the next specs,
+prepare the schemas, run the test suite on what has already merged, verify sources from a
+research result, read the code the next task will touch, update `PLAN.md`. Poll on a condition,
+never on a hunch, and never sleep through a window you could have used.
 
 ```sh
 "$CODEX_SKILL/scripts/codex_wait.sh" "$RUN" --handled auth-cache,docs   # blocks, prints "<label> <state>"
@@ -403,11 +439,34 @@ resume the preserved thread now and continue where the worker stopped. The threa
 `thread.txt` either way, so no work is lost by asking. The same applies when the connection drops
 mid-run, the machine reboots, or authentication expires.
 
-### 10. Ship
+### 10. Integrate
 
-You perform every irreversible step: staging, commit messages, tags, PRs, merges, releases,
-deploys. Confirm with the user before anything outward-facing. Report what each agent produced,
-what you rejected, and what you changed yourself.
+Every agent records the commit it started from, and `--worktree` refuses a base that is already
+behind its upstream, so a worker never builds on a tree nobody is running. At merge time that
+base is checked again: a branch whose base is no longer an ancestor of the target was written
+against a tree that has since moved, and merging it silently would resurrect the old state.
+
+```sh
+"$CODEX_SKILL/scripts/codex_merge.sh" --run-dir "$RUN" --repo /path/to/repo --into main \
+  --check "pytest -q" --rebase          # --dry-run first
+```
+
+The merge is atomic per branch and for the run as a whole: the target must be clean before it
+starts, each branch is committed in its worktree, merged with `--no-ff`, and verified by every
+`--check` before the next branch is touched. A conflict, a rebase that does not apply, or a
+failed check rolls the target back to the exact commit the run started from — a half-integrated
+tree is never left behind. Verify after every merge rather than once at the end, because two
+branches that each pass alone can fail together, and a single failure at the end tells you
+nothing about which one caused it.
+
+Merge in dependency order, and resolve a conflict between two branches yourself: the agent that
+wrote one side cannot see why the other side exists.
+
+### 11. Ship
+
+You perform every irreversible step: staging, commit messages, tags, PRs, releases, deploys.
+Confirm with the user before anything outward-facing. Report what each agent produced, what you
+rejected, and what you changed yourself.
 
 ## Keeping your own context small
 
@@ -420,6 +479,14 @@ context. Only the final report is bounded, because that is the part that lands i
 The one place a worker's context costs anything is `--resume`, which replays the whole thread as
 input. That is a bill, not a limit, and it is the reason a fresh agent often beats continuing a
 long thread.
+
+Keep what is worth keeping. A worker you will send more work to keeps its thread, because
+rebuilding its understanding of the code costs more than replaying it. Your own state lives in
+the run directory rather than in your context: `PLAN.md`, the specs, `thread.txt` for every
+agent, and `REVIEW.md`. After a compaction, an interruption, or a session restart, recover from
+those files instead of guessing — read `PLAN.md`, run `codex_status.sh`, and pick up the agents
+that are still unreviewed. Context that was written down is recoverable; context that only
+existed in your head is not, which is why it gets written down as it is produced.
 
 Rules that keep worker exploration out of your context:
 
