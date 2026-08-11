@@ -55,12 +55,49 @@ def start_ticks(pid):
     except (OSError, ValueError, IndexError):
         return None
 
-def state(pid):
+def field(pid, idx):
     try:
         stat = open(f"/proc/{pid}/stat").read()
-        return stat[stat.rindex(") ") + 2:].split()[0]
+        return stat[stat.rindex(") ") + 2:].split()[idx]
     except (OSError, ValueError, IndexError):
         return None
+
+def state(pid):
+    return field(pid, 0)
+
+def descends_from(pid, known):
+    """codex exec runs under a timeout wrapper, so the registered pid is an ancestor of the
+    real codex process. Without this walk every agent would be counted twice."""
+    seen = 0
+    while pid and pid != 1 and seen < 20:
+        if pid in known:
+            return True
+        ppid = field(pid, 1)
+        pid = int(ppid) if ppid and ppid.isdigit() else 0
+        seen += 1
+    return False
+
+def scan_unregistered(known):
+    """Agents started by hand still occupy a slot; an idle TUI or a zombie does not."""
+    found = []
+    for entry in pathlib.Path("/proc").iterdir():
+        if not entry.name.isdigit() or int(entry.name) in known:
+            continue
+        try:
+            argv = [a for a in (entry / "cmdline").read_bytes().split(b"\0") if a]
+        except OSError:
+            continue
+        argv = [a.decode(errors="replace") for a in argv]
+        if not argv or os.path.basename(argv[0]) != "codex" or argv[1:2] != ["exec"]:
+            continue
+        pid = int(entry.name)
+        if state(pid) in (None, "Z") or descends_from(pid, known):
+            continue
+        found.append({"pid": pid, "label": "(unregistered)",
+                      "tier": "?", "cwd": next((argv[i + 1] for i, a in enumerate(argv)
+                                                if a == "-C" and i + 1 < len(argv)), "?"),
+                      "run_dir": "(started outside this wrapper)", "registered_at": None})
+    return found
 
 live, stale = [], []
 for f in sorted(reg.glob("*.json")):
@@ -75,10 +112,12 @@ for f in sorted(reg.glob("*.json")):
     else:
         stale.append(f)
 
-if action in ("--prune", "--list", "--count", "--slots"):
-    for f in stale:
-        try: f.unlink()
-        except OSError: pass
+for f in stale:
+    try: f.unlink()
+    except OSError: pass
+
+# Every counter uses the same set, so --slots and codex_capacity.sh cannot disagree.
+live += scan_unregistered({d["pid"] for d in live})
 
 if action == "--count":
     print(len(live))
@@ -93,10 +132,11 @@ else:
     else:
         now = time.time()
         print(f"{'PID':>7}  {'LABEL':<24} {'TIER':<9} {'ELAPSED':>7}  WORKSPACE")
-        for d in sorted(live, key=lambda d: d.get("registered_at", 0)):
-            el = int(now - d.get("registered_at", now))
+        for d in sorted(live, key=lambda d: d.get("registered_at") or 0):
+            since = d.get("registered_at")
+            elapsed = f"{int(now - since)//60:>4}m{int(now - since)%60:02d}" if since else "     -"
             print(f"{d['pid']:>7}  {d.get('label','?')[:24]:<24} {d.get('tier') or d.get('effort','?'):<9} "
-                  f"{el//60:>4}m{el%60:02d}  {d.get('cwd','?')}")
+                  f"{elapsed}  {d.get('cwd','?')}")
             print(f"{'':>7}  run: {d.get('run_dir','?')}")
 PY
     ;;

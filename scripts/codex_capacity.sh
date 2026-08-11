@@ -31,49 +31,9 @@ esac
 
 # Agents started from other terminals or other orchestrator sessions count too: the API
 # quota and this machine are shared, and nothing else coordinates them.
-# The registry is authoritative for agents this wrapper started; the process scan catches
-# agents started by hand. Neither counts an idle Codex TUI, a zombie, or an unrelated
-# program that happens to be named codex.
-RUNNING=$(CODEX_REGISTRY_DIR="${CODEX_REGISTRY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/codex-agents}" python3 - <<'COUNT'
-import json, os, pathlib
-
-def field(pid, idx):
-    try:
-        stat = open(f"/proc/{pid}/stat").read()
-        return stat[stat.rindex(") ") + 2:].split()[idx]
-    except (OSError, ValueError, IndexError):
-        return None
-
-pids = set()
-reg = pathlib.Path(os.environ["CODEX_REGISTRY_DIR"])
-for f in reg.glob("*.json"):
-    try:
-        d = json.loads(f.read_text())
-    except (json.JSONDecodeError, OSError):
-        continue
-    pid = d.get("pid", 0)
-    if field(pid, 19) == str(d.get("start_ticks")) and field(pid, 0) not in (None, "Z"):
-        pids.add(pid)
-
-for entry in pathlib.Path("/proc").iterdir():
-    if not entry.name.isdigit():
-        continue
-    pid = int(entry.name)
-    try:
-        argv = (entry / "cmdline").read_bytes().split(b"\0")
-    except OSError:
-        continue
-    argv = [a.decode(errors="replace") for a in argv if a]
-    # Only a real `codex exec` run counts: the TUI has no subcommand, and a zombie is finished.
-    if not argv or os.path.basename(argv[0]) != "codex" or "exec" not in argv[1:2]:
-        continue
-    if field(pid, 0) in (None, "Z"):
-        continue
-    pids.add(pid)
-
-print(len(pids))
-COUNT
-)
+# One counter for the whole toolkit: codex_agents.sh knows which processes are real agents,
+# which are an idle TUI or a zombie, and which are the wrapper's own child.
+RUNNING=$("$(cd "$(dirname "$0")" && pwd)/codex_agents.sh" --count 2>/dev/null)
 RUNNING=${RUNNING:-0}
 GLOBAL_MAX=${CODEX_MAX_AGENTS:-5}
 FREE=$(( GLOBAL_MAX - RUNNING ))
