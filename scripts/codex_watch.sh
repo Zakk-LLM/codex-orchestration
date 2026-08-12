@@ -15,6 +15,8 @@ Usage: codex_watch.sh <run-dir> [--timeout SEC] [--interval SEC] [--state FILE]
   --state FILE    where the seen-set lives, default <run-dir>/.watch-state
   --warn PCT      warn when a running agent has used this share of its wall-clock limit,
                   default 80. Reported once per agent as "<label> EXPIRING <seconds> left".
+  --peek          for each running agent, also print its last event, read from the tail of
+                  events.jsonl. Liveness never costs more than a few kilobytes.
 
 Exit codes:
   0  something changed — labels and states are printed, act on them now
@@ -28,13 +30,14 @@ RUN=${1:-}; shift 2>/dev/null
 [ -n "$RUN" ] || { usage >&2; exit 3; }
 case "$RUN" in -h|--help) usage; exit 0 ;; esac
 
-TIMEOUT=300; INTERVAL=10; STATE=; WARN=80
+TIMEOUT=300; INTERVAL=10; STATE=; WARN=80; PEEK=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout) TIMEOUT=$2; shift 2 ;;
     --interval) INTERVAL=$2; shift 2 ;;
     --state) STATE=$2; shift 2 ;;
     --warn) WARN=$2; shift 2 ;;
+    --peek) PEEK=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 3 ;;
   esac
@@ -46,7 +49,8 @@ WAITED=0
 while :; do
   # Two orchestrators watching one run must not both claim the same completion, so the
   # read-modify-write of the seen-set happens under a lock.
-  OUT=$(flock "$STATE.lock" env RUN_DIR="$RUN" STATE_FILE="$STATE" WARN_PCT="$WARN" python3 <<'PY'
+  OUT=$(flock "$STATE.lock" env RUN_DIR="$RUN" STATE_FILE="$STATE" WARN_PCT="$WARN" \
+        PEEK="$PEEK" python3 <<'PY'
 import json, os, pathlib, sys, time
 
 run = pathlib.Path(os.environ["RUN_DIR"])
@@ -116,8 +120,49 @@ for a in dispatched:
                         m.get("thread_id") or ""))
         seen[a.name] = state
 
-if changed:
+# Liveness is the mtime plus the last event, never the whole log: an event file grows to
+# megabytes, and reading it to answer "is it alive" is the most expensive way to ask.
+def last_event(path):
+    try:
+        size = path.stat().st_size
+        with path.open("rb") as fh:
+            fh.seek(max(0, size - 4096))
+            lines = [l for l in fh.read().decode(errors="replace").splitlines() if l.startswith("{")]
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = ev.get("item") or {}
+        kind = item.get("type") or ev.get("type")
+        detail = (item.get("command") or item.get("query") or item.get("text") or "")[:60]
+        return f"{kind} {detail}".strip()
+    return None
+
+peeked = False
+if os.environ.get("PEEK") == "1":
+    for a in dispatched:
+        if (a / "meta.json").exists():
+            continue
+        ev = a / "events.jsonl"
+        if not ev.exists():
+            continue
+        line = last_event(ev) or "(no event yet)"
+        # Repeating an unchanged line every poll is the noise this whole design avoids.
+        if seen.get(f"{a.name}#peek") == line:
+            continue
+        seen[f"{a.name}#peek"] = line
+        peeked = True
+        print(f"~ {a.name}\talive {int(now - ev.stat().st_mtime)}s ago\t{line}", file=sys.stderr)
+
+if changed or peeked:
     state_file.write_text(json.dumps(seen))
+
+# A peek line is progress information, not a state change: it must not claim exit 0, which
+# means "an agent needs handling now".
+if changed:
     for name, state, result, thread in changed:
         print(f"{name}\t{state}\t{result}\t{thread}")
     print(f"# {running} still running, {done} finished", file=sys.stderr)

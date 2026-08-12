@@ -5,10 +5,11 @@ set -uo pipefail
 case "${1:-}" in
   -h|--help|"")
     cat <<'EOF'
-Usage: codex_status.sh <run-dir> [--full]
+Usage: codex_status.sh <run-dir> [--full|--brief]
 
 Prints one row per agent (state, duration, output tokens), the run's token totals, and each
-agent's thread id with a truncated head of its result. --full prints results untruncated.
+agent's thread id with a truncated head of its result. --full prints results untruncated;
+--brief prints the table and thread ids only, which is what a supervision check needs.
 EOF
     exit 0 ;;
 esac
@@ -19,6 +20,7 @@ python3 - "$RUN_DIR" "$FULL" <<'PY'
 import json, pathlib, sys, time
 run = pathlib.Path(sys.argv[1])
 full = sys.argv[2] == "--full"
+brief = sys.argv[2] == "--brief"
 agents = sorted(a for a in (run / "agents").glob("*") if a.is_dir()) \
     if (run / "agents").is_dir() else []
 if not agents:
@@ -73,7 +75,7 @@ print(f"\ntotal input {tin} / output {tout} tokens across {len(rows)} agents")
 for name, state, _, _, thread, path in rows:
     # Thread ids share a timestamp prefix, so print them in full for --resume.
     print(f"\n--- {name} [{state}] thread {thread}")
-    if not path:
+    if not path or brief:
         continue
     text = pathlib.Path(path).read_text(errors="replace").strip()
     body = text if full else text[:700] + ("\n… (truncated, read the file)" if len(text) > 700 else "")

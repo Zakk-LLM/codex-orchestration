@@ -348,6 +348,16 @@ something changes; its `--interval` only sets how often it stats a few files, wh
 nothing and never costs you a turn. A timer would either wake you when nothing happened or
 leave a finished agent sitting.
 
+Waiting reads almost nothing. Liveness is the event log's mtime plus, with `--peek`, its last
+event read from the final 4 KB of the file — the same answer from a 3 MB log as from a 3 KB
+one, and printed only when it changes. Never `cat` an event log, dump a result, or run a full
+status listing to find out whether an agent is alive: the whole point of a run directory is
+that the data stays on disk until there is a reason to read it. Results are read once, at
+review, and `codex_status.sh --brief` gives the table without any result bodies.
+
+A peek line never means "act now" — it exits 1 like any other quiet window, because progress
+information is not a state change.
+
 It also watches the clock on your behalf. Each running agent records its deadline when it
 starts, so the watcher reports before a guard fires rather than after:
 

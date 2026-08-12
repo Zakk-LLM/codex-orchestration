@@ -179,6 +179,12 @@ Monitoring is event-driven rather than timed: the call blocks and returns the mo
 changes, and `--interval` only controls how often it stats a few files, which costs no tokens
 and no turns.
 
+Waiting also reads almost nothing. Liveness is the event log's mtime plus, with `--peek`, its
+last event read from the final 4 KB — the same cost from a 3 MB log as from a 3 KB one, printed
+only when it changes and never claiming a state change. Event logs and results stay on disk
+until there is a reason to read them: results are read once, at review, and
+`codex_status.sh --brief` prints the table without any result bodies.
+
 It also watches each agent's clock. Deadlines are recorded at dispatch, so a warning arrives
 before a guard fires: `EXPIRING <n>s left` at 80% of the wall-clock limit (`--warn` changes the
 share), and `QUIET <n>s without an event` as the stall guard approaches. Act while the work
