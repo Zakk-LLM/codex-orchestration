@@ -25,7 +25,8 @@ refuses to launch. The constraints:
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "summary", "files_changed", "commands_run", "not_verified", "unresolved"],
+  "required": ["status", "summary", "files_changed", "commands_run", "regression",
+               "not_verified", "unresolved"],
   "properties": {
     "status": {"type": "string", "enum": ["done", "partial", "blocked"]},
     "summary": {"type": "string"},
@@ -53,11 +54,26 @@ refuses to launch. The constraints:
         }
       }
     },
+    "regression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checked", "callers_reviewed", "full_suite_run"],
+      "properties": {
+        "checked": {"type": "array", "items": {"type": "string"}},
+        "callers_reviewed": {"type": "array", "items": {"type": "string"}},
+        "full_suite_run": {"type": "boolean"}
+      }
+    },
     "not_verified": {"type": "array", "items": {"type": "string"}},
     "unresolved": {"type": "array", "items": {"type": "string"}}
   }
 }
 ```
+
+`regression` keeps the blast-radius check honest and bounded: `checked` lists the tests that
+were actually run, `callers_reviewed` the call sites that were read, and `full_suite_run` says
+whether the expensive path was taken. A worker that ran the full suite for a one-file change is
+burning time; one with an empty `checked` list verified nothing.
 
 `commands_run` is what makes the report checkable: an empty list next to `status: "done"` means
 the worker verified nothing, whatever its summary says. `not_verified` is required for the same

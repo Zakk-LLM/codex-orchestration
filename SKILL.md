@@ -529,6 +529,10 @@ tree is never left behind. Verify after every merge rather than once at the end,
 branches that each pass alone can fail together, and a single failure at the end tells you
 nothing about which one caused it.
 
+This is where the full suite belongs: once per merged branch, on the integrated tree, where a
+cross-branch regression can actually exist. Give `--check` the real suite here even though the
+agents ran targeted subsets.
+
 Merge in dependency order, and resolve a conflict between two branches yourself: the agent that
 wrote one side cannot see why the other side exists.
 

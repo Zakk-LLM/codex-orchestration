@@ -40,6 +40,23 @@ Run every acceptance command yourself and report each one with its exact invocat
 code. Do not report success from reading the code. List anything you could not verify and why.
 State `blocked` rather than inventing a way around a requirement that contradicts the code.
 
+## Regression check
+<Paste the output of `codex_impact.sh --repo <repo> --format md` here.>
+
+Check only what your change can plausibly break, and find it mechanically rather than by
+reading the repository:
+
+1. Run the tests listed above plus the acceptance commands. Nothing else.
+2. When the list is empty or you changed a signature, find callers with one search
+   (`git grep -n -w '<symbol>'`) and read only the call sites it returns.
+3. Run the full suite only when the scope above says shared surface was touched, or when a
+   targeted run is impossible.
+4. Stop when the listed checks pass. Do not open files for reassurance, do not re-read your own
+   diff, and do not audit code you did not change.
+
+Report each command with its exit code, and state plainly what you did not check. An honest
+"callers in `x.py` were not exercised by any test" is worth more than a broad scan.
+
 ## Prohibitions
 - Do not run `git commit`, `git push`, `git rebase`, `git checkout`, or any git command that
   changes history or the index.
