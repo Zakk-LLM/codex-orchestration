@@ -17,11 +17,16 @@ FILE is JSONL, one job per line. Recognized keys, all optional except label:
    "worktree":true, "worktree_base":"main", "timeout":3600, "stall":300,
    "schema":"/path/schema.json", "network":false, "approve_for_me":false,
    "prompt_file":"/path/prompt.md", "effort":"high", "model":"...",
-   "add_dir":["/other"], "profile":"..."}
+   "add_dir":["/other"], "profile":"...", "depends_on":["schema-design"]}
 
-prompt_file defaults to <run-dir>/agents/<label>/prompt.md. Jobs run hardest-tier-first, so
-the long ones start while there is still capacity. Concurrency is min(--max, codex_capacity.sh
---weight). Each job's exit status is reported; the script waits for all of them.
+prompt_file defaults to <run-dir>/agents/<label>/prompt.md. Independent jobs run
+hardest-tier-first so the long ones start while there is still capacity; concurrency is
+min(--max, codex_capacity.sh --weight).
+
+depends_on holds labels that must finish successfully first. A dependent job is not dispatched
+until they do, and is skipped outright if any of them fails — running it against a missing or
+broken result only produces work that has to be thrown away. Unknown labels and dependency
+cycles are rejected before anything is dispatched.
 EOF
 }
 
@@ -51,7 +56,8 @@ if [ "${CAP:-0}" -lt 1 ]; then
 fi
 echo "dispatching with concurrency $CAP (weight $WEIGHT)" >&2
 
-# Expand each job into a complete codex_agent.sh argument line, hardest tier first.
+# Expand each job into a complete codex_agent.sh argument line, hardest tier first, with its
+# dependencies attached so the scheduler below can hold it back.
 CMDS=$(RUN_DIR="$RUN" python3 - "$JOBS" <<'PY'
 import json, os, shlex, sys
 order = {"frontier": 0, "deep": 1, "standard": 2, "cheap": 3}
@@ -87,36 +93,110 @@ for j in sorted(jobs, key=lambda j: order.get(j.get("tier", "standard"), 2)):
         a += ["--network"]
     if j.get("approve_for_me"):
         a += ["--approve-for-me"]
-    print(label + "\t" + " ".join(shlex.quote(x) for x in a))
+    deps = ",".join(j.get("depends_on") or []) or "-"
+    print(label + "\t" + deps + "\t" + " ".join(shlex.quote(x) for x in a))
+
+# A dependency that does not exist, or a cycle, would deadlock the scheduler or silently drop
+# work. Both are decided here, before a single agent starts.
+labels = {j["label"] for j in jobs}
+for j in jobs:
+    for d in j.get("depends_on") or []:
+        if d not in labels:
+            sys.exit(f"job {j['label']!r} depends on unknown label {d!r}")
+graph = {j["label"]: list(j.get("depends_on") or []) for j in jobs}
+state = {}
+def visit(node, chain):
+    if state.get(node) == "done":
+        return
+    if state.get(node) == "open":
+        sys.exit("dependency cycle: " + " -> ".join(chain + [node]))
+    state[node] = "open"
+    for d in graph.get(node, []):
+        visit(d, chain + [node])
+    state[node] = "done"
+for label in graph:
+    visit(label, [])
 PY
 ) || exit 2
 
 [ -n "$CMDS" ] || { echo "no jobs found in $JOBS" >&2; exit 2; }
 
 if [ "$DRY" = 1 ]; then
-  printf '%s\n' "$CMDS" | while IFS=$'\t' read -r label args; do
-    printf '%s: codex_agent.sh %s %s\n' "$label" "$args" "$COMMON"
+  printf '%s\n' "$CMDS" | while IFS=$'\t' read -r label deps args; do
+    printf '%s%s: codex_agent.sh %s %s\n' "$label" \
+      "$([ "$deps" != - ] && echo " (after $deps)")" "$args" "$COMMON"
   done
   exit 0
 fi
 
-PIDS=(); LABELS=()
-while IFS=$'\t' read -r label args; do
-  # Throttle to the computed capacity; a finished slot is reused immediately.
-  while [ "$(jobs -pr | wc -l)" -ge "$CAP" ]; do sleep 2; done
-  echo "start $label" >&2
-  # Logs live outside agents/, which holds one directory per agent and nothing else.
-  mkdir -p "$RUN/logs"
-  eval "\"$HERE/codex_agent.sh\" $args $COMMON" > "$RUN/logs/$label.dispatch.log" 2>&1 &
-  PIDS+=($!); LABELS+=("$label")
+declare -A DEPS ARGS RESULT PID_OF
+ORDER=()
+while IFS=$'\t' read -r label deps args; do
+  [ "$deps" = - ] && deps=
+  ORDER+=("$label"); DEPS[$label]=$deps; ARGS[$label]=$args
 done <<< "$CMDS"
 
+mkdir -p "$RUN/logs"
 FAIL=0
-for i in "${!PIDS[@]}"; do
-  wait "${PIDS[$i]}"; code=$?
-  [ "$code" = 0 ] || FAIL=1
-  printf '%s exit=%s\n' "${LABELS[$i]}" "$code" >&2
+
+launch() {
+  local label=$1
+  echo "start $label" >&2
+  eval "\"$HERE/codex_agent.sh\" ${ARGS[$label]} $COMMON" > "$RUN/logs/$label.dispatch.log" 2>&1 &
+  PID_OF[$label]=$!
+}
+
+# Ready when every dependency finished successfully; skipped when one of them failed. Holding a
+# dependent back is the whole point: dispatching it early wastes the run and has to be redone.
+deps_state() {
+  local label=$1 dep
+  local status=ready
+  IFS=',' read -ra list <<< "${DEPS[$label]}"
+  for dep in ${list+"${list[@]}"}; do
+    [ -z "$dep" ] && continue
+    case "${RESULT[$dep]:-pending}" in
+      ok) ;;
+      pending|running) status=waiting ;;
+      *) echo "skip"; return ;;
+    esac
+  done
+  echo "$status"
+}
+
+remaining=${#ORDER[@]}
+while [ "$remaining" -gt 0 ]; do
+  progressed=0
+  for label in "${ORDER[@]}"; do
+    [ -n "${RESULT[$label]:-}" ] && continue
+    [ -n "${PID_OF[$label]:-}" ] && continue
+    case "$(deps_state "$label")" in
+      ready)
+        [ "$(jobs -pr | wc -l)" -ge "$CAP" ] && continue
+        launch "$label"; progressed=1 ;;
+      skip)
+        RESULT[$label]=skipped; FAIL=1; remaining=$((remaining - 1)); progressed=1
+        echo "skip $label: a dependency failed" >&2 ;;
+    esac
+  done
+
+  # Reap whatever finished, then loop: a completed dependency may unblock several jobs.
+  for label in "${ORDER[@]}"; do
+    pid=${PID_OF[$label]:-}
+    [ -z "$pid" ] && continue
+    [ -n "${RESULT[$label]:-}" ] && continue
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"; code=$?
+      if [ "$code" = 0 ]; then RESULT[$label]=ok; else RESULT[$label]=failed; FAIL=1; fi
+      remaining=$((remaining - 1)); progressed=1
+      printf '%s exit=%s\n' "$label" "$code" >&2
+    fi
+  done
+
+  [ "$remaining" -gt 0 ] && [ "$progressed" = 0 ] && sleep 2
 done
 
-"$HERE/codex_status.sh" "$RUN" 2>/dev/null | head -n $(( ${#PIDS[@]} + 4 ))
+for label in "${ORDER[@]}"; do
+  [ "${RESULT[$label]:-}" = skipped ] && echo "$label: skipped, dependency failed" >&2
+done
+"$HERE/codex_status.sh" "$RUN" 2>/dev/null | head -n $(( ${#ORDER[@]} + 4 ))
 exit $FAIL

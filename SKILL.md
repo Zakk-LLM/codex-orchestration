@@ -125,8 +125,30 @@ Split by file ownership, not by activity. Two agents editing the same file will 
 other, because they run as separate processes with no shared lock. Record each agent's label,
 exact writable scope, sandbox, effort, and dependencies in `PLAN.md`.
 
-Independent agents run in parallel. A dependent agent waits for the result file of the agent
-it depends on. Derive the concurrency from what the agents actually do and what the machine
+Order and atomicity are one design, not two features. The rule underneath both: work is only
+ever built on a state that actually exists — a dependency's finished result, or the target's
+real commit.
+
+Independent agents run in parallel. A dependent agent is *not dispatched* until the agents it
+depends on have finished successfully; declare that in `jobs.jsonl` and the dispatcher enforces
+it:
+
+```json
+{"label": "api",    "tier": "deep"}
+{"label": "client", "tier": "standard", "depends_on": ["api"]}
+```
+
+Dispatching a dependent task early is the expensive mistake: it works against a schema, a
+signature, or a file that does not exist yet, and its whole run is thrown away. The dispatcher
+therefore holds it back, skips it outright when a dependency fails, and rejects unknown
+dependencies and cycles before starting anything. A failed dependency stops its own subtree
+only — independent branches keep running and stay mergeable.
+
+The same order carries into integration: branches merge in dependency order, each merge is
+atomic and verified before the next begins, and any failure returns the target to the commit
+the run started from (step 10). A dependent branch also records the base it was written
+against, so if the target moved while it worked, it is rebased or refused rather than merged
+silently. Derive the concurrency from what the agents actually do and what the machine
 has free, rather than from a fixed number:
 
 ```sh

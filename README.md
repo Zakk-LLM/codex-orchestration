@@ -117,6 +117,25 @@ review: the same rename across 200 files does, the same rename in three files do
 dispatched trivial task also occupies a slot the machine cap counts and puts a review in the
 queue ahead of one that mattered.
 
+## Order and atomicity
+
+Both follow one rule: work is only ever built on a state that exists — a dependency's finished
+result, or the target's real commit.
+
+```json
+{"label": "api",    "tier": "deep"}
+{"label": "client", "tier": "standard", "depends_on": ["api"]}
+```
+
+A dependent job is not dispatched until its dependencies finish successfully, and is skipped
+when one of them fails; dispatching it early means it works against a schema or signature that
+does not exist yet and the whole run is discarded. Unknown dependencies and cycles are rejected
+before anything starts, and a failed dependency stops only its own subtree — independent
+branches keep running.
+
+Integration carries the same order: branches merge in dependency order, each merge is verified
+before the next begins, and any failure returns the target to the commit the run started from.
+
 ## Parallel writers and git worktrees
 
 `--worktree` gives each write-capable agent its own checkout on branch `codex/<label>`, leaving

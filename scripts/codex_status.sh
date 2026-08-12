@@ -29,6 +29,11 @@ rows, tin, tout = [], 0, 0
 for a in agents:
     meta_file = a / "meta.json"
     if not meta_file.exists():
+        # An agent directory with no event log was never dispatched: a prepared spec, or a job
+        # the scheduler skipped because a dependency failed. That is not the same as running.
+        if not (a / "events.jsonl").exists():
+            rows.append((a.name, "PENDING", "-", "-", "-", ""))
+            continue
         # While an agent runs, the useful number is how long it has before the guard kills it.
         left = "-"
         try:
