@@ -70,6 +70,27 @@ Worker count is not the scarce resource; your review capacity is. Each finished 
 diff read and a test run from you, so keep about three review-bearing agents in flight and
 raise it only for shallow, uniform work.
 
+Some work is never dispatched, however large the run:
+
+- **Git mechanics** — rebase, merge, conflict resolution, commit, branch and worktree cleanup,
+  stashing, cherry-picking. Every spec forbids workers from running these, so dispatching one
+  contradicts itself; `codex_worktrees.sh --rebase` and `codex_merge.sh` exist so you do them
+  in one command.
+- **A fix you can make faster than you can specify it** — a typo, a wrong constant, a missing
+  import, a one-line guard. Writing the spec, waiting, and reviewing the diff costs minutes for
+  a change that costs seconds.
+- **Anything you must verify line by line anyway** — a two-line change in code you are already
+  reading. Review is the expensive half, and dispatch does not reduce it.
+- **Running a command and reading its output** — tests, builds, linters, `git log`, a status
+  check. A worker adds a process launch and a context prime to something you can run directly.
+
+The test is not "is this tedious" but "does a worker's separate context window earn the spec
+plus the review". Bulk mechanical work does — the same rename across 200 files, one worker per
+batch. The same rename in three files does not.
+
+Dispatching cheap work also costs the run twice: it occupies a slot the machine cap counts, and
+it puts a review in your queue ahead of an agent that needed one.
+
 ## Workflow
 
 ### 1. Create the run directory

@@ -107,6 +107,16 @@ The limit is not worker count but review capacity: each finished agent costs one
 one test run. Roughly three review-bearing agents in flight is the working default, raised only
 for shallow, uniform work.
 
+Some work is never dispatched. Git mechanics — rebase, merge, conflict resolution, commit,
+branch and worktree cleanup — stay with the orchestrator, and every task spec forbids workers
+from running them, so dispatching one contradicts itself; `codex_worktrees.sh --rebase` and
+`codex_merge.sh` do them in one command. Neither does a fix that takes less time than writing
+its spec, a change small enough that reviewing it is the whole cost, or running a command and
+reading its output. The test is whether a separate context window earns the spec plus the
+review: the same rename across 200 files does, the same rename in three files does not. A
+dispatched trivial task also occupies a slot the machine cap counts and puts a review in the
+queue ahead of one that mattered.
+
 ## Parallel writers and git worktrees
 
 `--worktree` gives each write-capable agent its own checkout on branch `codex/<label>`, leaving
