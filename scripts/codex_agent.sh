@@ -293,6 +293,17 @@ if [ "$STALL" -gt 0 ] 2>/dev/null; then
   WATCHER=$!
 fi
 
+# The deadline is only knowable while the agent runs: meta.json arrives after it is already
+# dead. Writing it now lets a supervisor warn before the guard fires instead of after.
+STARTED_JSON="$OUT/started.json"
+LABEL="$LABEL" CWD="$CWD" TIMEOUT="$TIMEOUT" STALL="$STALL" START="$START" PID="$CODEX_PID" \
+  python3 -c 'import json, os, sys
+json.dump({"label": os.environ["LABEL"], "cwd": os.environ["CWD"],
+           "pid": int(os.environ["PID"]), "started_at": int(os.environ["START"]),
+           "timeout_s": int(os.environ["TIMEOUT"]), "stall_s": int(os.environ["STALL"]),
+           "deadline": int(os.environ["START"]) + int(os.environ["TIMEOUT"])},
+          open(sys.argv[1], "w"))' "$STARTED_JSON" 2>/dev/null
+
 # Register the live agent so another window can see what this one is running.
 REG_META=$(mktemp)
 # Built by a JSON serializer: a label or path containing a quote or backslash would otherwise

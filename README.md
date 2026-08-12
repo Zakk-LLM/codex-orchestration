@@ -146,8 +146,18 @@ requires a real `exec` invocation.
 scripts/codex_watch.sh "$RUN" --timeout 120
 ```
 
-A bounded wait that always returns something actionable: exit 0 means agents changed state and
-the labels are printed, exit 1 means nothing changed and the window belongs to work that needs
+Monitoring is event-driven rather than timed: the call blocks and returns the moment something
+changes, and `--interval` only controls how often it stats a few files, which costs no tokens
+and no turns.
+
+It also watches each agent's clock. Deadlines are recorded at dispatch, so a warning arrives
+before a guard fires: `EXPIRING <n>s left` at 80% of the wall-clock limit (`--warn` changes the
+share), and `QUIET <n>s without an event` as the stall guard approaches. Act while the work
+still exists — tell the worker through `NOTES.md` to stop and report what it has, or prepare
+the continuation spec — because a guard kill discards the turn in progress. For a running
+agent, `codex_status.sh` shows time left rather than time spent.
+
+Exit 0 means agents changed state and the labels are printed, exit 1 means nothing changed and the window belongs to work that needs
 no agent, exit 2 means the run is finished, exit 3 means nothing has been dispatched. Exit 1 is
 an instruction, not a reason to call it again. Pick the timeout as the time until the next
 useful action rather than as how long an agent might take, and prefer a host-provided wake-up

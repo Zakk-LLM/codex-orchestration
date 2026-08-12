@@ -13,6 +13,8 @@ Usage: codex_watch.sh <run-dir> [--timeout SEC] [--interval SEC] [--state FILE]
                   action, not as how long the agents might take.
   --interval SEC  poll interval, default 10
   --state FILE    where the seen-set lives, default <run-dir>/.watch-state
+  --warn PCT      warn when a running agent has used this share of its wall-clock limit,
+                  default 80. Reported once per agent as "<label> EXPIRING <seconds> left".
 
 Exit codes:
   0  something changed — labels and states are printed, act on them now
@@ -26,12 +28,13 @@ RUN=${1:-}; shift 2>/dev/null
 [ -n "$RUN" ] || { usage >&2; exit 3; }
 case "$RUN" in -h|--help) usage; exit 0 ;; esac
 
-TIMEOUT=300; INTERVAL=10; STATE=
+TIMEOUT=300; INTERVAL=10; STATE=; WARN=80
 while [ $# -gt 0 ]; do
   case "$1" in
     --timeout) TIMEOUT=$2; shift 2 ;;
     --interval) INTERVAL=$2; shift 2 ;;
     --state) STATE=$2; shift 2 ;;
+    --warn) WARN=$2; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 3 ;;
   esac
@@ -43,8 +46,8 @@ WAITED=0
 while :; do
   # Two orchestrators watching one run must not both claim the same completion, so the
   # read-modify-write of the seen-set happens under a lock.
-  OUT=$(flock "$STATE.lock" env RUN_DIR="$RUN" STATE_FILE="$STATE" python3 <<'PY'
-import json, os, pathlib, sys
+  OUT=$(flock "$STATE.lock" env RUN_DIR="$RUN" STATE_FILE="$STATE" WARN_PCT="$WARN" python3 <<'PY'
+import json, os, pathlib, sys, time
 
 run = pathlib.Path(os.environ["RUN_DIR"])
 state_file = pathlib.Path(os.environ["STATE_FILE"])
@@ -60,11 +63,36 @@ dispatched = [a for a in agents if (a / "events.jsonl").exists() or (a / "meta.j
 if not dispatched:
     sys.exit(3)
 
+now = time.time()
+warn_pct = int(os.environ.get("WARN_PCT", "80"))
 changed, running, done = [], 0, 0
 for a in dispatched:
     meta = a / "meta.json"
     if not meta.exists():
         running += 1
+        # A guard kill destroys the turn's work, so the warning has to arrive before it, not
+        # after: an expiring agent can still be told to stop and report what it has.
+        try:
+            s = json.loads((a / "started.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        left = int(s.get("deadline", 0) - now)
+        limit = int(s.get("timeout_s") or 0)
+        if limit and left <= limit * (100 - warn_pct) / 100:
+            key = f"{a.name}#expiring"
+            if key not in seen:
+                seen[key] = "EXPIRING"
+                changed.append((a.name, f"EXPIRING {max(left, 0)}s left of {limit}s", "", ""))
+        stall = int(s.get("stall_s") or 0)
+        events = a / "events.jsonl"
+        if stall and events.exists():
+            quiet = int(now - events.stat().st_mtime)
+            if quiet >= stall * warn_pct / 100:
+                key = f"{a.name}#quiet"
+                if key not in seen:
+                    seen[key] = "QUIET"
+                    changed.append((a.name, f"QUIET {quiet}s without an event, stall kill at {stall}s",
+                                    "", ""))
         continue
     try:
         m = json.loads(meta.read_text())

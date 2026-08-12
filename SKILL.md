@@ -15,8 +15,8 @@ Four reasons, in the order they matter:
 **Context.** A worker explores in its own context window — file reads, greps, failed commands,
 dead ends — and returns a bounded result. In this skill's own research run the workers consumed
 12.6M input tokens between them while the orchestrator read three result files (observed during
-development; that run directory was not retained). That work would
-otherwise have landed in your context and pushed out the plan you are holding.
+development; that run directory was not retained). That work would otherwise have landed in
+your context and pushed out the plan you are holding.
 
 **Cost per unit of difficulty.** Each task is dispatched at the cheapest tier that can do it,
 so mechanical work does not run at frontier reasoning depth and does not sit in an expensive
@@ -90,7 +90,7 @@ Layout:
 <run>/worktrees/<label>/      that agent's isolated checkout, branch codex/<label>
 <run>/logs/<label>.dispatch.log
 <run>/agents/<label>/prompt.md NOTES.md events.jsonl stderr.log result.json|last.txt
-                     thread.txt meta.json verify.json
+                     thread.txt started.json meta.json verify.json
 <run>/REVIEW.md               your findings per agent, with the verdict
 ```
 
@@ -113,9 +113,9 @@ has free, rather than from a fixed number:
 ```
 
 `light` is reading and drafting, `medium` is editing plus a targeted test, `heavy` is full
-builds, whole test suites, or containers. The answer is also capped at 8 regardless of the
-machine, and never exceeds the free share of `CODEX_MAX_AGENTS`. The script reads cores, available memory, and load
-average, and halves the answer on a busy machine; override its memory estimate with
+builds, whole test suites, or containers. The script reads cores, available memory, and load
+average, halves the answer on a busy machine, caps it at 8 regardless of the hardware, and
+never exceeds the free share of `CODEX_MAX_AGENTS`; override its memory estimate with
 `--per-agent-mb` when you know the real cost. Mixed runs are budgeted per group: three heavy
 compile agents and two light readers, not five of whatever the first estimate said. Leave room
 for the tests you run yourself during review — you are a workload on the same machine.
@@ -300,7 +300,31 @@ never on a hunch, and never sleep through a window you could have used.
 "$CODEX_SKILL/scripts/codex_status.sh" "$RUN"                           # full picture when you want it
 ```
 
-`codex_watch.sh` is the anti-idling primitive, and its exit code decides what happens next:
+Monitoring is event-driven, not a timer. `codex_watch.sh` blocks and returns the moment
+something changes; its `--interval` only sets how often it stats a few files, which costs
+nothing and never costs you a turn. A timer would either wake you when nothing happened or
+leave a finished agent sitting.
+
+It also watches the clock on your behalf. Each running agent records its deadline when it
+starts, so the watcher reports before a guard fires rather than after:
+
+- `EXPIRING <n>s left of <limit>s` — the agent has used 80% of its wall-clock limit
+  (`--warn` changes the share)
+- `QUIET <n>s without an event, stall kill at <limit>s` — it is approaching the stall guard
+
+Both arrive once per agent. Act on them while the work still exists: send a note telling the
+worker to stop exploring and write what it has (`codex_note.sh <run> <label> "Wall-clock limit
+in 3 minutes. Stop now, save your work, and report what is done and what is left."`), or
+prepare the continuation spec so the thread can be resumed the moment it dies. Doing nothing
+means the kill discards the turn in progress, and you pay for that work twice.
+
+An `EXPIRING` warning on a first run is also a scoping signal: the task was bigger than the
+timeout you chose, so the continuation should be split rather than simply given more time.
+
+`codex_status.sh` shows the same clock — for a running agent the TIME column is the time left,
+not the time spent.
+
+`codex_watch.sh`'s exit code decides what happens next:
 
 | exit | meaning | what you do |
 |------|---------|-------------|
