@@ -278,7 +278,7 @@ scripts/codex_merge.sh --run-dir "$RUN" --repo /path/to/repo --into main \
 
 ## 姊妹技能
 
-[opencode-orchestration](https://github.com/Zakk-LLM/opencode-orchestration) 是同一套設計在 opencode 引擎上的版本：以權限設定檔取代沙箱，因此本技能只能要求的 git 禁令在該版由引擎執行，另有具名代理預設與工作階段分叉；代價是失去作業系統層級的限制與結構化輸出強制。
+[opencode-orchestration](https://github.com/Zakk-LLM/opencode-orchestration) 是同一套設計在 opencode 引擎上的版本。它以權限設定檔取代沙箱，本技能只能要求的 git 禁令在該版由引擎直接執行，另有具名代理預設與工作階段分叉。代價是失去作業系統層級的限制與結構化輸出強制。
 
 ## 授權
 
