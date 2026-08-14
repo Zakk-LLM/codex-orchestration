@@ -240,9 +240,15 @@ the job:
 
 | sandbox | grants | use for |
 |---------|--------|---------|
-| `read-only` | reads anywhere, no writes | research, audits, review, planning, data collection |
+| `read-only` | runs any command, but the kernel blocks every write | research, audits, review, running tests and linters |
 | `workspace-write` | writes under `--cwd` plus each `--add-dir` | all implementation work |
 | `danger-full-access` | unrestricted | never without the user's explicit approval in this session |
+
+`read-only` here is stronger and more permissive at once than a permission list: a worker may
+run `pytest`, a linter, or anything else, and the sandbox stops the writes rather than the
+commands. That is why an auditor belongs in `read-only` on this engine — it can execute the
+checks it judges by without being able to change the tree. The opencode sibling has no
+equivalent and needs its `inspect` profile instead.
 
 `--network` grants *shell* network access, and only under `workspace-write` — the read-only
 sandbox has no network permission at all, so `curl` and package installers cannot work there.
