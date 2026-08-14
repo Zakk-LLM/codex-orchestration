@@ -84,6 +84,21 @@ Read from the 0.147 source archive and confirmed against the installed binary.
 - Useful but unadopted: `--strict-config` for version drift, execpolicy `.rules` as a deterministic command guard (preview), a dedicated
   `CODEX_HOME` for namespace isolation, and `--ephemeral` when no resume is needed.
 
+## Dispatch overhead, measured
+
+The same one-word task ("reply READY", no tools used) was metered at roughly 20K input tokens
+through `codex exec` and roughly 8K through `opencode run` on the same provider and account.
+That gap is the engines' base instruction sets, and it is paid on every dispatch before the task
+begins. It changes two things:
+
+- The floor cost per agent is engine-specific, so a fan-out of many tiny agents is proportionally
+  more expensive on codex than on opencode.
+- The tier choice matters more, not less, for small tasks: 20K input tokens costs $0.10 on a
+  flagship priced at $5 per million and $0.004 on a cheap model at $0.20 per million.
+
+Consequence: batch trivial work into fewer agents rather than dispatching one per item, and keep
+mechanical work on the cheap tier where the fixed overhead is nearly free.
+
 Gaps the research could not close: no published production comparison of worktree versus
 container isolation cost, no measurement of orchestrator review time as worker count grows, and
 no confirmed JSONL shape for a service-side schema rejection.
