@@ -412,6 +412,13 @@ measurements behind these defaults are in [references/evidence.md](references/ev
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and recovery
 - [references/evidence.md](references/evidence.md) — measurements and sources behind the defaults
 
+## Sibling skill
+
+[opencode-orchestration](https://github.com/Zakk-LLM/opencode-orchestration) is the same design
+on the opencode engine: permission profiles instead of a sandbox — which enforce the git
+prohibitions these specs can only request — plus named agent presets and session forking, at the
+cost of OS-level confinement and schema enforcement.
+
 ## License
 
 MIT
