@@ -41,13 +41,17 @@ codex --version || echo "codex CLI not installed — stop and tell the user"
 "$CODEX_SKILL/scripts/codex_agents.sh" --list      # what other windows are already running
 ```
 
-Agents started by another orchestrator session, another terminal, or by hand are still using
-this machine and this API quota. The registry lists them, `codex_capacity.sh` subtracts them,
-and `codex_agent.sh` holds a slot lock for the whole run, so the cap (`CODEX_MAX_AGENTS`,
-default 5) holds between sessions that use this wrapper. A `codex exec` started by hand holds
-no lock: it is counted and displayed, but it can still push the machine past the cap, so check
-the list rather than assuming the lock covers everything. An idle Codex TUI, a zombie, and the
-wrapper's own child process are never counted.
+Agents started by another orchestrator session, another terminal, by hand, or by the sibling
+opencode toolkit are all using this machine and this API quota, so the cap covers all of them.
+Both wrappers lock the same slot directory and both counters read both registries and scan for
+both engines' processes: `AGENT_MAX_AGENTS` (default 5) is the machine total, not 5 per engine.
+A `codex exec` started by hand holds no lock — it is counted and displayed, but it can still push
+the machine past the cap, so read the list rather than trusting the lock alone. An idle Codex
+TUI, a zombie, and the wrapper's own child process are never counted.
+
+Machine-local settings — the cap and the tier-to-model bindings — live in
+`${XDG_CONFIG_HOME:-~/.config}/agent-orchestration.env`, sourced by both wrappers when present,
+so no provider's model names live in this repository.
 
 The scripts below assume `codex >= 0.40` with the `exec` subcommand. Set
 `CODEX_SKILL=<this skill's directory>` so the examples are copy-pasteable.
@@ -212,6 +216,7 @@ cheap work stays cheap without a decision per flag:
 | `standard` | `medium` | default: a contained feature, a README, tests for existing code |
 | `deep` | `high` | changes spanning several files, non-obvious bugs, behavior-preserving refactors |
 | `frontier` | `xhigh` | architecture decisions, concurrency and performance work, ambiguous requirements |
+| `max` | `max` | one problem a `frontier` agent already failed twice; never a default |
 
 A tier always sets the reasoning effort. It sets the model only when the matching binding
 exists: export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`,

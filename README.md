@@ -163,9 +163,13 @@ scripts/codex_agents.sh --slots     # free slots against CODEX_MAX_AGENTS (defau
 ```
 
 Each agent registers itself while it runs and holds one of the slot locks, so the cap holds
-across sessions that use this wrapper; `--admission refuse` fails instead of queuing. A
-`codex exec` started by hand holds no lock — it is counted and listed, but it can still push
-the machine past the cap. An idle Codex TUI, a zombie, and an unrelated program named `codex` are never counted:
+across sessions and across engines: the sibling opencode toolkit locks the same directory and
+both counters read both registries, making `AGENT_MAX_AGENTS` (default 5) the machine total
+rather than 5 per engine. `--admission refuse` fails instead of queuing. A `codex exec` started
+by hand holds no lock — it is counted and listed, but it can still push the machine past the cap.
+
+Tier-to-model bindings and the cap live in `${XDG_CONFIG_HOME:-~/.config}/agent-orchestration.env`,
+sourced when present, so provider-specific names stay out of this repository. An idle Codex TUI, a zombie, and an unrelated program named `codex` are never counted:
 liveness comes from the registry entry's pid and process start time, and the process scan
 requires a real `exec` invocation.
 
@@ -285,6 +289,11 @@ The sandbox is the permission boundary and defaults to the least that can do the
 | `read-only` | reads only | research, audits, review, planning, data collection |
 | `workspace-write` | writes under `--cwd` and each `--add-dir` | all implementation work |
 | `danger-full-access` | unrestricted | never without the user's explicit approval |
+
+`--bypass` goes further and drops the sandbox and the approval layer entirely
+(`--dangerously-bypass-approvals-and-sandbox`). It prints a warning, is never a default, and
+belongs only in a workspace you would hand a shell to. `--profile <name>` layers a Codex config
+profile, which is where a reusable worker role — model, effort, storage — is best kept.
 
 `--network` grants shell network access and only under `workspace-write`; the read-only sandbox
 has no network permission, so `curl` and installers cannot run there. Codex's built-in web

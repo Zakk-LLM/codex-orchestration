@@ -117,7 +117,9 @@ scripts/codex_agents.sh --list
 scripts/codex_agents.sh --slots
 ```
 
-每個代理執行期間會登記自己並持有一個名額鎖，所以上限（`CODEX_MAX_AGENTS`，預設 5）在使用本工具的工作階段之間成立；`--admission refuse` 則直接失敗而不排隊。手動啟動的 `codex exec` 不持有名額鎖，會被計入與列出，但仍可能讓機器超出上限。掛著的 Codex 互動視窗、殭屍行程、以及其他同名程式都不會被計入，因為存活判定依據登記項的 pid 與行程啟動時間，行程掃描也要求確實是 `exec` 呼叫。
+每個代理執行期間會登記自己並持有一個名額鎖，上限因此跨工作階段也跨引擎成立。姊妹的 opencode 工具鎖定同一個名額目錄，兩邊的計數器都讀取兩份登記簿。`AGENT_MAX_AGENTS`（預設 5）是整台機器的總數，不是每個引擎各 5。`--admission refuse` 則直接失敗而不排隊。手動啟動的 `codex exec` 不持有名額鎖，會被計入與列出，但仍可能讓機器超出上限。
+
+上限與各難度級別對應的模型寫在 `${XDG_CONFIG_HOME:-~/.config}/agent-orchestration.env`，存在時由兩邊的包裝腳本載入，因此供應商的模型名稱不會進入本倉庫。掛著的 Codex 互動視窗、殭屍行程、以及其他同名程式都不會被計入，因為存活判定依據登記項的 pid 與行程啟動時間，行程掃描也要求確實是 `exec` 呼叫。
 
 ## 不空等
 
@@ -195,6 +197,8 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
 | `read-only` | 只讀 | 研究、稽核、審查、規劃、資料搜集 |
 | `workspace-write` | 可寫 `--cwd` 與各個 `--add-dir` | 所有實作工作 |
 | `danger-full-access` | 不受限 | 未取得使用者當次明確同意即不使用 |
+
+`--bypass` 更進一步，直接關閉沙箱與核准層（`--dangerously-bypass-approvals-and-sandbox`）。它會印出警告，永遠不是預設值，只用於你願意直接給出 shell 的工作區。`--profile <name>` 套用 Codex 設定檔的 profile，可重複使用的工作角色（模型、推理強度、是否保存）放在那裡最合適。
 
 `--network` 授予 shell 的網路存取，且只在 `workspace-write` 之下生效；`read-only` 沙箱沒有網路權限，`curl` 與安裝程式在其中無法執行。Codex 內建的網頁搜尋是另一回事，執行於伺服器端且預設啟用，所以 `read-only` 的研究代理仍可檢索。`--approve-for-me` 只在代理需要合法提權時加入。腳本不提供 `--dangerously-bypass-approvals-and-sandbox`。
 

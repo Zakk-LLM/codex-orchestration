@@ -21,7 +21,7 @@ Workspace:
   --allow-stale-base start a worktree from a base that is behind its upstream
 
 Model and limits:
-  --tier NAME        difficulty tier: cheap|standard|deep|frontier
+  --tier NAME        difficulty tier: cheap|standard|deep|frontier|max
                      Sets effort, and the model when CODEX_TIER_<NAME>_MODEL is exported.
                      --effort and --model override it.
   --effort LEVEL     low|medium|high|xhigh|max               (default: medium)
@@ -37,6 +37,8 @@ Behavior:
   --resume THREAD    continue an existing thread id
   --network          allow network access and web search
   --approve-for-me   auto-review escalation requests instead of failing them
+  --bypass           no sandbox and no approvals at all. Dangerous, never a default, and only
+                     for a workspace you would hand a shell to.
 
 Artifacts: prompt.md events.jsonl stderr.log thread.txt meta.json
            result.json (with --schema) or last.txt (without)
@@ -46,9 +48,18 @@ EOF
 RUN_DIR=; LABEL=; PROMPT_FILE=; PROMPT_TEXT=; CWD=$PWD
 EFFORT=medium; EFFORT_SET=0; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; RESUME=
 TIER=
-NETWORK=0; APPROVE=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD; ADMISSION=wait; ALLOW_STALE=0
+NETWORK=0; APPROVE=0; BYPASS=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD; ADMISSION=wait; ALLOW_STALE=0
 HERE=$(cd "$(dirname "$0")" && pwd)
 REG=${CODEX_REGISTRY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/codex-agents}
+
+# Machine-local defaults (tier-to-model bindings, the shared cap) live outside this repository
+# so nothing here assumes a provider's lineup. The file is optional.
+ENV_FILE=${AGENT_ORCHESTRATION_ENV:-${XDG_CONFIG_HOME:-$HOME/.config}/agent-orchestration.env}
+# shellcheck source=/dev/null
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+# Both orchestration toolkits share one machine and one quota, so they share one slot
+# directory and one cap. Engine-specific variables still work, but the shared one wins.
+SLOTS=${AGENT_SLOTS_DIR:-${XDG_RUNTIME_DIR:-/tmp}/agent-slots}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -75,6 +86,7 @@ while [ $# -gt 0 ]; do
     --admission) ADMISSION=$2; shift 2 ;;
     --network) NETWORK=1; shift ;;
     --approve-for-me) APPROVE=1; shift ;;
+    --bypass) BYPASS=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -88,7 +100,8 @@ if [ -n "$TIER" ]; then
     standard) TIER_EFFORT=medium ;;
     deep)     TIER_EFFORT=high ;;
     frontier) TIER_EFFORT=xhigh ;;
-    *) echo "bad --tier: $TIER (cheap|standard|deep|frontier)" >&2; exit 2 ;;
+    max)      TIER_EFFORT=max ;;
+    *) echo "bad --tier: $TIER (cheap|standard|deep|frontier|max)" >&2; exit 2 ;;
   esac
   [ "$EFFORT_SET" = 1 ] || EFFORT=$TIER_EFFORT
   if [ -z "$MODEL" ]; then
@@ -225,7 +238,8 @@ rm -f "$RESULT" "$OUT/thread.txt"
 # Every option is a root option placed before the `resume` subcommand: resume does not inherit
 # sandbox, cwd, model, or workspace roots from the original run, and its own parser rejects
 # -C and -s outright.
-ARGS=(exec --json --skip-git-repo-check -C "$CWD" -s "$SANDBOX" -o "$RESULT")
+ARGS=(exec --json --skip-git-repo-check -C "$CWD" -o "$RESULT")
+[ "$BYPASS" = 1 ] || ARGS+=(-s "$SANDBOX")
 ARGS+=(-c "model_reasoning_effort=$EFFORT")
 for d in ${ADD_DIRS+"${ADD_DIRS[@]}"}; do ARGS+=(--add-dir "$d"); done
 if [ "$NETWORK" = 1 ]; then
@@ -238,7 +252,13 @@ if [ "$NETWORK" = 1 ]; then
   fi
   ARGS+=(-c "sandbox_workspace_write.network_access=true")
 fi
-[ "$APPROVE" = 1 ] && ARGS+=(--approve-for-me)
+if [ "$BYPASS" = 1 ]; then
+  echo "WARNING: $LABEL runs with no sandbox and no approvals" >&2
+  ARGS+=(--dangerously-bypass-approvals-and-sandbox)
+  SANDBOX=bypass
+elif [ "$APPROVE" = 1 ]; then
+  ARGS+=(--approve-for-me)
+fi
 [ -n "$MODEL" ] && ARGS+=(-m "$MODEL")
 [ -n "$PROFILE" ] && ARGS+=(-p "$PROFILE")
 [ -n "$SCHEMA" ] && ARGS+=(--output-schema "$SCHEMA")
@@ -248,19 +268,19 @@ ARGS+=(-)   # prompt arrives on stdin, so no shell quoting can corrupt it
 # Slots are flock'd files in a shared directory, so the cap holds across terminals and
 # orchestrator sessions that know nothing about each other. The lock is held for the run.
 if [ "$ADMISSION" != off ]; then
-  mkdir -p "$REG/slots" 2>/dev/null
-  MAXA=${CODEX_MAX_AGENTS:-5}
+  mkdir -p "$SLOTS" 2>/dev/null
+  MAXA=${AGENT_MAX_AGENTS:-${CODEX_MAX_AGENTS:-5}}
   SLOT_FD=
   WAITED=0
   while [ -z "$SLOT_FD" ]; do
     for i in $(seq 1 "$MAXA"); do
-      exec {fd}>"$REG/slots/slot-$i" || continue
+      exec {fd}>"$SLOTS/slot-$i" || continue
       if flock -n "$fd"; then SLOT_FD=$fd; break; fi
       exec {fd}>&-
     done
     [ -n "$SLOT_FD" ] && break
     if [ "$ADMISSION" = refuse ]; then
-      echo "no free agent slot: $MAXA already running machine-wide (CODEX_MAX_AGENTS)" >&2
+      echo "no free agent slot: $MAXA already running machine-wide (AGENT_MAX_AGENTS)" >&2
       "$HERE/codex_agents.sh" --list >&2
       exit 3
     fi
@@ -334,10 +354,11 @@ wait "$CODEX_PID"; CODE=$?
 END=$(date +%s)
 
 python3 - "$OUT" "$LABEL" "$CWD" "$EFFORT" "$SANDBOX" "$CODE" "$((END - START))" \
-         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$BASE_SHA" "$MODEL" "$BASE_REF" <<'PY'
+         "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$BASE_SHA" "$MODEL" "$BASE_REF" \
+         "${PROFILE:-}" <<'PY'
 import json, sys, pathlib
 (out, label, cwd, effort, sandbox, code, dur, resume, stalled, branch, base_sha,
- model, base_ref) = sys.argv[1:14]
+ model, base_ref, profile) = sys.argv[1:15]
 out = pathlib.Path(out)
 thread, usage, errors, failed_cmds, files, reconnects = None, {}, [], 0, set(), 0
 for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
@@ -370,7 +391,7 @@ if thread:
 result = out / "result.json" if (out / "result.json").exists() else out / "last.txt"
 code = int(code)
 meta = {
-    "label": label, "cwd": cwd, "effort": effort, "sandbox": sandbox, "model": model or None,
+    "label": label, "cwd": cwd, "effort": effort, "sandbox": sandbox, "model": model or None, "profile": profile or None,
     "resumed_from": resume or None, "exit_code": code, "duration_s": int(dur),
     "thread_id": thread, "usage": usage,
     "result_file": str(result) if result.exists() else None,
