@@ -220,10 +220,15 @@ cheap work stays cheap without a decision per flag:
 
 A tier always sets the reasoning effort. It sets the model only when the matching binding
 exists: export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`,
-or `CODEX_TIER_FRONTIER_MODEL` to bind one. Without a binding every tier runs the model from
-the Codex config, so the cost separation is effort-only until they are set. `--model` or
-`--effort` overrides the tier for one agent. `--effort max`
-stays available as a last resort after a `frontier` agent failed twice on the same problem.
+`CODEX_TIER_FRONTIER_MODEL`, or `CODEX_TIER_MAX_MODEL` to bind one. Without a binding every tier
+runs the model from the Codex config, so the cost separation is effort-only until they are set.
+
+Both halves matter, and they divide the ladder cleanly: below `deep` the **model** changes, above
+it the **effort** does. A cheap model can cost an order of magnitude less per token than a
+flagship, and research is where that lands hardest — a read-only worker reads far more than it
+writes, so the input price is the bill. `--model` or `--effort` overrides a tier for one agent,
+and `--profile <name>` layers a Codex config profile, which is the tidier place to keep a whole
+worker role: model, effort, and storage in one named file.
 
 Rate the task, not its importance. Most work in a run is `cheap` or `standard`; a run where
 everything is `deep` is a run that was never triaged. When unsure, dispatch `cheap` first: a
