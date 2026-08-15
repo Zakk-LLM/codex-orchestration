@@ -13,6 +13,18 @@ code 124 or 137 means the wrapper killed it — `meta.json` reports `timed_out: 
 A repeated timeout is a decomposition problem, not a timeout-value problem. Split the task and
 re-dispatch.
 
+## `database is locked` when several agents start at once
+
+Codex keeps session state in SQLite, and four processes reaching it in the same instant lose
+to a busy database. `codex_agent.sh` serializes launches machine-wide behind a short hold
+(`AGENT_START_STAGGER`, default 2 seconds) so a fan-out ramps in, and retries a launch that died
+on a lock with quadratic backoff (`AGENT_LOCK_RETRIES`, default 4). A retry is only attempted
+when the run produced no real events: a lock error happens before the model does anything, so
+repeating it repeats nothing, while retrying a run that had started working would duplicate it.
+Each failed attempt's stderr is kept as `stderr.attempt-<n>.log`.
+
+Verified: four simultaneous dispatches now all reach distinct sessions and exit 0.
+
 ## `error: unexpected argument '-C' found`
 
 The option was placed after the `resume` subcommand. Every option is a root option and belongs

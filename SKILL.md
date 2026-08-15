@@ -304,6 +304,10 @@ source:
 
 - Never let Codex inherit your stdin. The script feeds the prompt file on stdin; a raw
   `codex exec "prompt"` with an inherited terminal stdin hangs until it is killed.
+- Starts are staggered, not simultaneous. Both engines keep session state in SQLite, so a
+  four-way launch loses to `database is locked`; the wrapper holds a machine-wide start lock for
+  `AGENT_START_STAGGER` seconds per launch and retries a lock failure with backoff, only ever
+  when the run produced no events.
 - Always wrap in `timeout`, sending `SIGINT` first — Codex turns it into a graceful turn
   interrupt. `codex exec` has no internal limit.
 - Every option is a root option placed *before* the `resume` subcommand:

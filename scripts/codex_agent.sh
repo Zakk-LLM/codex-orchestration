@@ -290,11 +290,52 @@ if [ "$ADMISSION" != off ]; then
 fi
 
 START=$(date +%s)
-# stdin is the prompt file and nothing else: an inherited terminal stdin makes codex wait
-# forever. SIGINT first, because Codex turns it into a graceful turn interrupt.
-( cd "$CWD" && timeout --signal=INT --kill-after=30 "$TIMEOUT" \
-    codex "${ARGS[@]}" < "$OUT/prompt.md" > "$OUT/events.jsonl" 2> "$OUT/stderr.log" ) &
-CODEX_PID=$!
+
+# Codex keeps session state in SQLite, and several processes reaching it in the same instant
+# lose to "database is locked". Starts are serialized machine-wide with a short hold so a
+# fan-out ramps in rather than stampeding; the lock covers the launch only.
+STAGGER=${AGENT_START_STAGGER:-2}
+stagger_start() {
+  [ "$STAGGER" -gt 0 ] 2>/dev/null || return 0
+  mkdir -p "$SLOTS" 2>/dev/null
+  exec {sfd}>"$SLOTS/.start.lock" || return 0
+  flock "$sfd" 2>/dev/null || return 0
+  sleep "$STAGGER"
+  exec {sfd}>&-
+}
+
+# A lock error happens before the model does anything, so retrying repeats nothing. A run that
+# produced real events is never retried, because that would duplicate work.
+locked_without_progress() {
+  grep -qiE "database is locked|SQLITE_BUSY|database table is locked" "$OUT/stderr.log" \
+       "$OUT/events.jsonl" 2>/dev/null || return 1
+  ! grep -qE '"type":"(item\.|turn\.completed)' "$OUT/events.jsonl" 2>/dev/null
+}
+
+ATTEMPT=0
+MAX_ATTEMPTS=${AGENT_LOCK_RETRIES:-4}
+while :; do
+  ATTEMPT=$((ATTEMPT + 1))
+  stagger_start
+  # stdin is the prompt file and nothing else: an inherited terminal stdin makes codex wait
+  # forever. SIGINT first, because Codex turns it into a graceful turn interrupt.
+  ( cd "$CWD" && timeout --signal=INT --kill-after=30 "$TIMEOUT" \
+      codex "${ARGS[@]}" < "$OUT/prompt.md" > "$OUT/events.jsonl" 2> "$OUT/stderr.log" ) &
+  CODEX_PID=$!
+  sleep 2
+  if kill -0 "$CODEX_PID" 2>/dev/null; then break; fi
+  # Already finished: reap it once and remember the status, or the final wait would report 127.
+  wait "$CODEX_PID"; EARLY=$?
+  EARLY_DONE=1; EARLY_CODE=$EARLY
+  if [ "$EARLY" = 0 ] || [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ] || ! locked_without_progress; then
+    break
+  fi
+  EARLY_DONE=0
+  BACKOFF=$((ATTEMPT * ATTEMPT * 2))
+  echo "database locked on attempt $ATTEMPT/$MAX_ATTEMPTS, retrying in ${BACKOFF}s" >&2
+  cp "$OUT/stderr.log" "$OUT/stderr.attempt-$ATTEMPT.log" 2>/dev/null
+  sleep "$BACKOFF"
+done
 
 STALLED=0
 if [ "$STALL" -gt 0 ] 2>/dev/null; then
@@ -347,7 +388,7 @@ trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
-wait "$CODEX_PID"; CODE=$?
+if [ "${EARLY_DONE:-0}" = 1 ]; then CODE=$EARLY_CODE; else wait "$CODEX_PID"; CODE=$?; fi
 "$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
 [ -n "${WATCHER:-}" ] && kill "$WATCHER" 2>/dev/null
 [ -f "$OUT/.stalled" ] && { STALLED=1; rm -f "$OUT/.stalled"; }
