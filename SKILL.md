@@ -223,6 +223,8 @@ exists: export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIE
 `CODEX_TIER_FRONTIER_MODEL`, or `CODEX_TIER_MAX_MODEL` to bind one. Without a binding every tier
 runs the model from the Codex config, so the cost separation is effort-only until they are set.
 
+Both halves of a tier are configurable, so the ladder is data rather than code: `CODEX_TIER_<TIER>_MODEL` binds the model and `CODEX_TIER_<TIER>_EFFORT` overrides the effort. Set both in the machine-local env file and no job has to carry `--effort` by hand — a ladder that needs a flag on every dispatch is a ladder that will be forgotten on one.
+
 Both halves matter, and they divide the ladder cleanly: below `deep` the **model** changes, above
 it the **effort** does. A cheap model can cost an order of magnitude less per token than a
 flagship, and research is where that lands hardest — a read-only worker reads far more than it

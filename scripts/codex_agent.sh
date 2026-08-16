@@ -22,7 +22,8 @@ Workspace:
 
 Model and limits:
   --tier NAME        difficulty tier: cheap|standard|deep|frontier|max
-                     Sets effort, and the model when CODEX_TIER_<NAME>_MODEL is exported.
+                     Sets effort and model from CODEX_TIER_<NAME>_EFFORT and
+                     CODEX_TIER_<NAME>_MODEL when those are exported.
                      --effort and --model override it.
   --effort LEVEL     low|medium|high|xhigh|max               (default: medium)
   --sandbox MODE     read-only|workspace-write|danger-full-access (default: read-only)
@@ -103,6 +104,12 @@ if [ -n "$TIER" ]; then
     max)      TIER_EFFORT=max ;;
     *) echo "bad --tier: $TIER (cheap|standard|deep|frontier|max)" >&2; exit 2 ;;
   esac
+  # The effort ladder is a default, not a law: a machine where a mid model at a high effort
+  # beats a top model at a lower one wants a different shape, and that belongs in the
+  # machine-local file rather than in every job's flags.
+  TIER_EFFORT_VAR="CODEX_TIER_$(printf '%s' "$TIER" | tr '[:lower:]' '[:upper:]')_EFFORT"
+  eval "TIER_OVERRIDE=\${$TIER_EFFORT_VAR:-}"
+  [ -n "$TIER_OVERRIDE" ] && TIER_EFFORT=$TIER_OVERRIDE
   [ "$EFFORT_SET" = 1 ] || EFFORT=$TIER_EFFORT
   if [ -z "$MODEL" ]; then
     TIER_VAR="CODEX_TIER_$(printf '%s' "$TIER" | tr '[:lower:]' '[:upper:]')_MODEL"
