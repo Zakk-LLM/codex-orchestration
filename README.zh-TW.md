@@ -190,11 +190,11 @@ scripts/codex_note.sh "$RUN" auth-cache "config.py 的常數已過時，已寫�
 
 ## 權限
 
-沙箱是權限邊界，預設取能完成任務的最小值。
+沙箱是權限邊界，預設取能完成任務的最小值。Codex 的 `read-only` 同時比工具允許清單更嚴也更寬鬆：工作代理可以執行 `pytest` 或 linter，由核心擋下寫入而不是擋下命令。稽核工作在這個引擎上就該用 `read-only`——也正因如此，這個名稱不能沿用到姊妹引擎，omp 的 `read-only` 根本沒有 `bash`，opencode 的則是 plan 模式。
 
 | 沙箱 | 授予 | 用於 |
 |---|---|---|
-| `read-only` | 只讀 | 研究、稽核、審查、規劃、資料搜集 |
+| `read-only` | 可執行任何命令，但由核心擋下所有寫入 | 研究、稽核、審查、規劃、資料搜集 |
 | `workspace-write` | 可寫 `--cwd` 與各個 `--add-dir` | 所有實作工作 |
 | `danger-full-access` | 不受限 | 未取得使用者當次明確同意即不使用 |
 
@@ -283,6 +283,13 @@ scripts/codex_merge.sh --run-dir "$RUN" --repo /path/to/repo --into main \
 ## 姊妹技能
 
 [opencode-orchestration](https://github.com/Zakk-LLM/opencode-orchestration) 是同一套設計在 opencode 引擎上的版本。它以權限設定檔取代沙箱，本技能只能要求的 git 禁令在該版由引擎直接執行，另有具名代理預設與工作階段分叉。代價是失去作業系統層級的限制與結構化輸出強制。
+
+## 檢查
+
+`sh scripts/check-all.sh` 會跑完這個倉庫能對自己做的全部檢查：tier 階梯仍投影到約定的值、
+description 寫著本引擎 read-only 的執行邊界、兩份 README 都保留「這些設定檔名稱不能沿用到
+姊妹引擎」那句話，以及每個 shell 腳本都能解析。之後的控制會在臨時副本上逐條破壞，證明這些
+檢查還會變紅。CI 跑的是同一條命令。
 
 ## 授權
 

@@ -282,11 +282,15 @@ expands details on demand, so its own context is not flooded by worker output.
 
 ## Permissions
 
-The sandbox is the permission boundary and defaults to the least that can do the job.
+The sandbox is the permission boundary and defaults to the least that can do the job. Codex's
+`read-only` is stronger and more permissive at once than a tool allowlist: a worker may run
+`pytest` or a linter, and the kernel stops the writes rather than the commands. That is why an
+auditor belongs in `read-only` on this engine — and why the name does not carry to the siblings,
+where omp's `read-only` has no `bash` at all and opencode's is plan mode.
 
 | Sandbox | Grants | Use for |
 |---|---|---|
-| `read-only` | reads only | research, audits, review, planning, data collection |
+| `read-only` | runs any command, but the kernel blocks every write | research, audits, review, planning, data collection |
 | `workspace-write` | writes under `--cwd` and each `--add-dir` | all implementation work |
 | `danger-full-access` | unrestricted | never without the user's explicit approval |
 
@@ -427,6 +431,14 @@ measurements behind these defaults are in [references/evidence.md](references/ev
 on the opencode engine: permission profiles instead of a sandbox — which enforce the git
 prohibitions these specs can only request — plus named agent presets and session forking, at the
 cost of OS-level confinement and schema enforcement.
+
+## Checks
+
+`sh scripts/check-all.sh` runs everything this repository can check about itself: the tier
+ladder still projects to the agreed values, the description states this engine's read-only
+execution boundary, both READMEs keep the note that these profile names do not carry to the
+siblings, and every shell script parses. The controls that follow break each of those on a
+temporary copy to prove the checks can still fail. CI runs the same command.
 
 ## License
 
