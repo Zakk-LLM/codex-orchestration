@@ -8,6 +8,13 @@ description: Drive the Codex CLI as a fleet of worker agents while you stay the 
 Codex writes; you plan, supervise, review, and ship. Codex agents never commit, never
 push, never deploy, and never decide that their own output is acceptable.
 
+## Relations
+
+- Depends on: nothing.
+- Parallel: `omp` and `opencode` are the same design on other engines. Pick one per run.
+- Hands off to: `zakk-review` for judging what a worker returns and `zakk-workflow` for landing it and the completion report, when they are installed. Without them, the review section below is the gate.
+- Upstream: `zakk-workflow` and `zakk-maintain` send dispatch here.
+
 ## Why delegate to Codex at all
 
 Four reasons, in the order they matter:
