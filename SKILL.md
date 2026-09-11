@@ -275,12 +275,14 @@ the worker mid-edit, and you inherit a half-applied change with no final report.
 | single-file mechanical edit, fact extraction | `low` | 300–600 |
 | contained feature, README, tests for one module | `medium` | 900–1800 (default 1800) |
 | change across several files, bug hunt with repro | `high` | 1800–3600 |
-| architecture, concurrency, performance, vague spec | `xhigh` | 3600–7200 |
-| the hardest single problem in the run | `max` | 7200+ |
+| architecture, concurrency, performance, vague spec | `xhigh` | 3600–5400 |
+| the hardest single problem in the run | `max` | 5400 |
 
-Estimate from the work, then roughly triple it: a worker spends most of its wall-clock reading
-the repository and running commands, not generating text. When unsure, set it high. An agent
-that finishes early costs nothing, while one killed at 90% costs the whole run.
+Estimate from the work, then roughly triple it, up to the ceiling: a worker spends most of its wall-clock reading
+the repository and running commands, not generating text.
+
+**Hard ceiling: 5400 seconds (90 minutes) for any worker.** A worker still running past that is treated as suspect, non-essential work — repeated full gate runs, ablation of every hunk, a sixth version of the report — and is killed on sight, not waited for; every extra round re-reads the whole context and burns tokens by the hour. You finish from what is in its worktree: commit by theme, push, let CI be the gate. Cap the verification in the spec itself: one full gate run, two or three ablations of the hunks that matter, one report, and the sentence "do not repeat a full round".
+
 
 ### 6. Dispatch
 
