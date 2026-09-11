@@ -276,7 +276,7 @@ the worker mid-edit, and you inherit a half-applied change with no final report.
 | contained feature, README, tests for one module | `medium` | 900–1800 (default 1800) |
 | change across several files, bug hunt with repro | `high` | 1800–3600 |
 | architecture, concurrency, performance, vague spec | `xhigh` | 3600–5400 |
-| the hardest single problem in the run | `max` | 5400 |
+| the hardest single problem in the run | `max` | 3600–5400 |
 
 Estimate from the work, then roughly triple it, up to the ceiling: a worker spends most of its wall-clock reading
 the repository and running commands, not generating text.
