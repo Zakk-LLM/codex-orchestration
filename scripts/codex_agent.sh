@@ -31,6 +31,7 @@ Model and limits:
   --profile NAME     Codex config profile ($CODEX_HOME/<name>.config.toml)
   --timeout SEC      hard wall-clock limit                   (default: 1800)
   --stall SEC        kill when no event arrives for this long (default: off)
+  --max-tools N      invalidate a result after more than N completed tools (default: 0, unlimited)
 
 Behavior:
   --schema FILE      JSON Schema; the final message must match it
@@ -47,7 +48,7 @@ EOF
 }
 
 RUN_DIR=; LABEL=; PROMPT_FILE=; PROMPT_TEXT=; CWD=$PWD
-EFFORT=medium; EFFORT_SET=0; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; RESUME=
+EFFORT=medium; EFFORT_SET=0; SANDBOX=read-only; SCHEMA=; MODEL=; PROFILE=; TIMEOUT=1800; STALL=0; MAX_TOOLS=0; RESUME=
 TIER=
 NETWORK=0; APPROVE=0; BYPASS=0; ADD_DIRS=(); WORKTREE=; WORKTREE_BASE=HEAD; ADMISSION=wait; ALLOW_STALE=0
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -83,6 +84,7 @@ while [ $# -gt 0 ]; do
     --profile) PROFILE=$2; shift 2 ;;
     --timeout) TIMEOUT=$2; shift 2 ;;
     --stall) STALL=$2; shift 2 ;;
+    --max-tools) MAX_TOOLS=$2; shift 2 ;;
     --resume) RESUME=$2; shift 2 ;;
     --admission) ADMISSION=$2; shift 2 ;;
     --network) NETWORK=1; shift ;;
@@ -123,6 +125,7 @@ case "$EFFORT" in low|medium|high|xhigh|max) ;; *) echo "bad --effort: $EFFORT" 
 case "$SANDBOX" in read-only|workspace-write|danger-full-access) ;; *) echo "bad --sandbox: $SANDBOX" >&2; exit 2 ;; esac
 case "$ADMISSION" in wait|refuse|off) ;; *) echo "bad --admission: $ADMISSION (wait|refuse|off)" >&2; exit 2 ;; esac
 case "$LABEL" in */*|.|..) echo "invalid label: $LABEL (no path separators)" >&2; exit 2 ;; esac
+case "$MAX_TOOLS" in *[!0-9]*|"") echo "bad --max-tools: $MAX_TOOLS" >&2; exit 2 ;; esac
 
 CWD=$(cd "$CWD" && pwd) || exit 2
 OUT="$RUN_DIR/agents/$LABEL"
@@ -361,6 +364,29 @@ if [ "$STALL" -gt 0 ] 2>/dev/null; then
   WATCHER=$!
 fi
 
+# The tool budget is its own watcher rather than a branch of the stall loop: the stall loop
+# only exists when --stall is set, and a bounded inquiry sets no stall. Rescanning the whole
+# event file every two seconds is affordable only because a budgeted run is short by
+# definition; the hard edge is the recount after exit below, which invalidates the result
+# even when the kill here came too late.
+if [ "$MAX_TOOLS" -gt 0 ] 2>/dev/null && kill -0 "$CODEX_PID" 2>/dev/null; then
+  ( while kill -0 "$CODEX_PID" 2>/dev/null; do
+      sleep 2
+      COUNT=$(PYTHONPATH="$HERE" python3 -c \
+        'from codex_events import scan_tools; import sys; print(len(scan_tools(sys.argv[1], 0)[0]))' \
+        "$OUT/events.jsonl")
+      if [ "$COUNT" -gt "$MAX_TOOLS" ]; then
+        echo "tool budget: $COUNT completions exceeds $MAX_TOOLS, interrupting" >> "$OUT/stderr.log"
+        touch "$OUT/.over-budget"
+        kill -INT "$CODEX_PID" 2>/dev/null
+        sleep 2
+        kill -KILL "$CODEX_PID" 2>/dev/null
+        exit 0
+      fi
+    done ) &
+  BUDGET_WATCHER=$!
+fi
+
 # The deadline is only knowable while the agent runs: meta.json arrives after it is already
 # dead. Writing it now lets a supervisor warn before the guard fires instead of after.
 STARTED_JSON="$OUT/started.json"
@@ -389,6 +415,7 @@ rm -f "$REG_META"
 cleanup() {
   kill -INT "$CODEX_PID" 2>/dev/null
   [ -n "${WATCHER:-}" ] && kill "$WATCHER" 2>/dev/null
+  [ -n "${BUDGET_WATCHER:-}" ] && kill "$BUDGET_WATCHER" 2>/dev/null
   "$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
 }
 trap cleanup EXIT
@@ -398,17 +425,32 @@ trap 'cleanup; exit 143' TERM
 if [ "${EARLY_DONE:-0}" = 1 ]; then CODE=$EARLY_CODE; else wait "$CODEX_PID"; CODE=$?; fi
 "$HERE/codex_agents.sh" --unregister "$CODEX_PID" 2>/dev/null
 [ -n "${WATCHER:-}" ] && kill "$WATCHER" 2>/dev/null
+[ -n "${BUDGET_WATCHER:-}" ] && kill "$BUDGET_WATCHER" 2>/dev/null
+OVER_BUDGET=0
+TOOL_COMPLETIONS=$(PYTHONPATH="$HERE" python3 -c \
+  'from codex_events import scan_tools; import sys; print(len(scan_tools(sys.argv[1], 0)[0]))' \
+  "$OUT/events.jsonl")
+if [ "$MAX_TOOLS" -gt 0 ] && [ "$TOOL_COMPLETIONS" -gt "$MAX_TOOLS" ]; then
+  OVER_BUDGET=1
+  touch "$OUT/.over-budget"
+  CODE=66
+fi
 [ -f "$OUT/.stalled" ] && { STALLED=1; rm -f "$OUT/.stalled"; }
 END=$(date +%s)
 
 python3 - "$OUT" "$LABEL" "$CWD" "$EFFORT" "$SANDBOX" "$CODE" "$((END - START))" \
          "$RESUME" "$STALLED" "$WORKTREE_BRANCH" "$BASE_SHA" "$MODEL" "$BASE_REF" \
-         "${PROFILE:-}" <<'PY'
+         "${PROFILE:-}" "$HERE" "$OVER_BUDGET" <<'PY'
 import json, sys, pathlib
 (out, label, cwd, effort, sandbox, code, dur, resume, stalled, branch, base_sha,
- model, base_ref, profile) = sys.argv[1:15]
+ model, base_ref, profile, scripts, over_budget) = sys.argv[1:17]
+sys.path.insert(0, scripts)
+from codex_events import scan_tools
 out = pathlib.Path(out)
-thread, usage, errors, failed_cmds, files, reconnects = None, {}, [], 0, set(), 0
+thread, usage, errors, files, reconnects = None, {}, [], set(), 0
+tool_events, _ = scan_tools(out / "events.jsonl", 0)
+tool_calls = sum(event["ok"] for event in tool_events)
+failed_cmds = len(tool_events) - tool_calls
 for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
     line = line.strip()
     if not line.startswith("{"):
@@ -428,8 +470,6 @@ for line in (out / "events.jsonl").read_text(errors="replace").splitlines():
     elif ev.get("type") in ("turn.failed", "error"):
         errors.append(ev)
     item = ev.get("item") or {}
-    if item.get("type") == "command_execution" and item.get("exit_code") not in (0, None):
-        failed_cmds += 1
     if item.get("type") == "file_change":
         for ch in item.get("changes", []) or []:
             if isinstance(ch, dict) and ch.get("path"):
@@ -444,12 +484,14 @@ meta = {
     "thread_id": thread, "usage": usage,
     "result_file": str(result) if result.exists() else None,
     "result_bytes": result.stat().st_size if result.exists() else 0,
+    "tool_calls": tool_calls,
     "failed_commands": failed_cmds,
     "files_touched": sorted(files),
     "errors": errors[:5],
     "error_count": len(errors),
     "timed_out": code in (124, 137) and stalled != "1",
     "stalled": stalled == "1",
+    "over_budget": over_budget == "1",
     "reconnects": reconnects,
     # A run that died with no completed turn after reconnect attempts failed on transport,
     # not on the task: resume it as-is instead of rewriting the spec.
