@@ -1,6 +1,6 @@
 ---
 name: codex
-description: Drive the Codex CLI as a fleet of worker agents while you stay the orchestrator and reviewer. Use when a task is large enough to split across parallel workers — feature implementation, refactors, bug hunts, test writing, README and documentation drafting, research and data collection, multi-file audits — or whenever the user asks to delegate work to Codex. You write the plan, dispatch scoped agents, supervise, review every diff yourself, and own the commit, merge, and deploy steps that Codex is never allowed to touch. Codex's `read-only` sandbox runs any command while the kernel blocks writes, so an auditor here can execute the checks it judges by.
+description: Superseded by the dispatch skill (github.com/Zakk-LLM/dispatch, --engine codex); read that for new work, this one stays for old run directories. Drive the Codex CLI as a fleet of worker agents while you stay the orchestrator and reviewer. Use when a task is large enough to split across parallel workers — feature implementation, refactors, bug hunts, test writing, README and documentation drafting, research and data collection, multi-file audits — or whenever the user asks to delegate work to Codex. You write the plan, dispatch scoped agents, supervise, review every diff yourself, and own the commit, merge, and deploy steps that Codex is never allowed to touch. Codex's `read-only` sandbox runs any command while the kernel blocks writes, so an auditor here can execute the checks it judges by.
 ---
 
 # Codex Orchestration
