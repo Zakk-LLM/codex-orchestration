@@ -1,7 +1,8 @@
 # Picking effort, sandbox, and timeout
 
 Difficulty decides both the reasoning depth and the model. `--tier` sets them together, so the
-cheap work stays cheap without a decision per flag:
+cheap work stays cheap without a decision per flag (the tier table itself stays in
+`SKILL.md`, step 5, where the contract check reads it):
 
 A tier always sets the reasoning effort. It sets the model only when the matching binding
 exists: export `CODEX_TIER_CHEAP_MODEL`, `CODEX_TIER_STANDARD_MODEL`, `CODEX_TIER_DEEP_MODEL`,
@@ -23,7 +24,7 @@ failed cheap attempt costs less than an unnecessary deep one, and its output usu
 the spec for the retry.
 
 Sandbox is the permission boundary and defaults to the most restrictive option that can do
-the job:
+the job (the profile table is in `SKILL.md`, step 5):
 
 `read-only` here is stronger and more permissive at once than a permission list: a worker may
 run `pytest`, a linter, or anything else, and the sandbox stops the writes rather than the
