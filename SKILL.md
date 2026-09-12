@@ -292,17 +292,8 @@ source:
 Handle one returned agent at a time; interrupt on expiry or stalled progress, and wait only
 when no independent work remains. See [references/supervise.md](references/supervise.md).
 
-When watch prints `REFLECT`, run the shown `codex_reflect.sh` command once. The inquiry has ten
-tools and at most 390 seconds including wrapper backstops; it is not progress:
-
-- `NO_ISSUE`: continue supervision.
-- `CANNOT_JUDGE`: inspect the named sources instead of re-dispatching.
-- `ROUTE_CORRECTION`: verify its exact quotes, then send only your correction with `codex_note.sh`.
-
-A direct maintainer correction requires `codex_reflect.sh <run> <label> --trigger maintainer`.
-Reflection is a reminder, not a pause: the worker keeps running and reads a correction only at
-its next live-notes checkpoint. With a custom watch `--state`, pass the same path to reflection;
-`codex_status.sh` reads only the default `<run>/.watch-state`.
+When watch prints `REFLECT`, run the shown `codex_reflect.sh` command once; it is a reminder,
+not a pause. The three verdicts and what each asks of you: [references/reflect.md](references/reflect.md).
 
 ### 8. Review — the part you never delegate
 
@@ -489,4 +480,5 @@ restatement of the task. Every one of those keeps a round trip from happening.
 - [references/supervise.md](references/supervise.md) — supervising returned, stalled, and interrupted agents
 - [references/review-gate.md](references/review-gate.md) — the anti-optimism review protocol
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and fixes
+- [references/reflect.md](references/reflect.md) — the reflection checkpoint: trigger, verdicts, bounds
 - [references/evidence.md](references/evidence.md) — the measurements behind these defaults
