@@ -292,6 +292,18 @@ source:
 Handle one returned agent at a time; interrupt on expiry or stalled progress, and wait only
 when no independent work remains. See [references/supervise.md](references/supervise.md).
 
+When watch prints `REFLECT`, run the shown `codex_reflect.sh` command once. The inquiry has ten
+tools and at most 390 seconds including wrapper backstops; it is not progress:
+
+- `NO_ISSUE`: continue supervision.
+- `CANNOT_JUDGE`: inspect the named sources instead of re-dispatching.
+- `ROUTE_CORRECTION`: verify its exact quotes, then send only your correction with `codex_note.sh`.
+
+A direct maintainer correction requires `codex_reflect.sh <run> <label> --trigger maintainer`.
+Reflection is a reminder, not a pause: the worker keeps running and reads a correction only at
+its next live-notes checkpoint. With a custom watch `--state`, pass the same path to reflection;
+`codex_status.sh` reads only the default `<run>/.watch-state`.
+
 ### 8. Review — the part you never delegate
 
 Run this per agent, as soon as that agent returns. **An agent's report is a claim; a command you
