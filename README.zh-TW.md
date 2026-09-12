@@ -2,6 +2,8 @@
 
 [English](README.md) | 繁體中文
 
+整套 skill 的路由表（什麼任務讀哪份）在 [zakk-workflow 的 README](https://github.com/Zakk-LLM/zakk-workflow/blob/main/README.zh-CN.md#与其他-skill-的边界)。
+
 Codex Orchestration 讓協調代理把工作分派給多個 Codex CLI 工作代理，並保留規劃、監督、審查與部署。適用於功能開發、重構、缺陷排查、測試補齊、文件撰寫、資料搜集與多檔案稽核。
 
 分工固定：工作代理只產出程式碼與草稿；協調者讀真實 diff、執行測試、寫審查結論；commit、merge、發佈由協調者執行。任務規格明確禁止工作代理執行改寫歷史的 git 命令。
