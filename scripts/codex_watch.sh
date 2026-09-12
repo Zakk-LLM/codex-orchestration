@@ -167,7 +167,9 @@ for a in dispatched:
             elapsed = max(0, int((now - float(reflect.get("base_at", started_at))) / 60))
             trigger = "tools" if tool_due else "elapsed"
             command = " ".join(shlex.quote(value) for value in
-                               ("codex_reflect.sh", str(run), a.name, "--trigger", trigger))
+                               (str(pathlib.Path(os.environ["SCRIPTS_DIR"]) / "codex_reflect.sh"),
+                                str(run), a.name, "--trigger", trigger,
+                                "--state", os.environ["STATE_FILE"]))
             reflect["pending"] = True
             seen[f"{a.name}#reflect"] = reflect
             changed.append((a.name,

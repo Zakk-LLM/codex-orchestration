@@ -214,11 +214,12 @@ def make_watch(name, successes, failures_count=0, age=0, deadline=2000, label="w
         {"started_at": now - age, "deadline": now + deadline, "timeout_s": age + deadline}))
     return run_dir
 
-def poll_watch(run_dir, tools=100, minutes=45):
-    return subprocess.run(
-        [root / "scripts/codex_watch.sh", run_dir, "--timeout", "0", "--interval", "1",
-         "--reflect-tools", str(tools), "--reflect-min", str(minutes)],
-        capture_output=True, text=True)
+def poll_watch(run_dir, tools=100, minutes=45, state=None):
+    command = [root / "scripts/codex_watch.sh", run_dir, "--timeout", "0", "--interval", "1",
+               "--reflect-tools", str(tools), "--reflect-min", str(minutes)]
+    if state is not None:
+        command += ["--state", state]
+    return subprocess.run(command, capture_output=True, text=True)
 
 def reflect_threshold_and_dedup():
     run_dir = make_watch("threshold-run", 99, failures_count=5)
@@ -242,10 +243,12 @@ def reflect_single_and_deadline():
     result = poll_watch(both)
     assert result.returncode == 0 and result.stdout.count("REFLECT") == 1
     elapsed = make_watch("elapsed run", 0, age=3600, label="w;echo bad")
-    result = poll_watch(elapsed)
+    custom_state = tmp / "custom state"
+    result = poll_watch(elapsed, state=custom_state)
     advertised = result.stdout.split("— ", 1)[1].strip()
     assert shlex.split(advertised) == [
-        "codex_reflect.sh", str(elapsed), "w;echo bad", "--trigger", "elapsed"]
+        str(root / "scripts/codex_reflect.sh"), str(elapsed), "w;echo bad",
+        "--trigger", "elapsed", "--state", str(custom_state)]
     late = make_watch("late-run", 100, age=3600, deadline=599)
     result = poll_watch(late)
     assert "REFLECT" not in result.stdout
