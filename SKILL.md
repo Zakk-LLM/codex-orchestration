@@ -473,6 +473,8 @@ restatement of the task. Every one of those keeps a round trip from happening.
 - [references/prompt-template.md](references/prompt-template.md) — the task spec structure
 - [references/schemas.md](references/schemas.md) — output schemas for impl, findings, research
 - [references/worktrees.md](references/worktrees.md) — isolating parallel writers, merging, cleanup
+- [references/tiers.md](references/tiers.md) — choosing reasoning effort, sandbox, and timeout
+- [references/supervise.md](references/supervise.md) — supervising returned, stalled, and interrupted agents
 - [references/review-gate.md](references/review-gate.md) — the anti-optimism review protocol
 - [references/troubleshooting.md](references/troubleshooting.md) — failure modes and fixes
 - [references/evidence.md](references/evidence.md) — the measurements behind these defaults
